@@ -1,0 +1,29 @@
+# Prose gate for klin's user-facing docs. Scope and the enabled category set
+# come from .prose-mint.toml at the repo root, so a local `prose-mint bulk` walk
+# and CI apply the same rules.
+#
+# The action lives in the sibling marketplace repo rather than here, because
+# klin does not ship prose-mint. That is a cross-repo reference to a public
+# repo, pinned to main: if prose-mint's action changes under us, this job is
+# where it will show up first.
+name: prose
+on:
+  pull_request:
+jobs:
+  prose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ostin-pil/claude-plugins/prose-mint@main
+        with:
+          strict: "true"
+          # These docs wrap at ~80 columns by choice, so hard-wrap stays off in
+          # .prose-mint.toml. A PR body is a different medium: GitHub turns a
+          # single newline into a line break, so the same wrapping renders
+          # ragged there. Scan the body with the built-in ruleset instead.
+          pr-body-config: "default"
