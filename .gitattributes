@@ -1,0 +1,15 @@
+# core.autocrlf is true on the development machine, and this repo is expected to
+# run on Linux CI. Pin LF so the checkout, the tests and the gate all agree.
+* text=auto
+
+*.py       text eol=lf
+*.md       text eol=lf
+*.json     text eol=lf
+*.jsonl    text eol=lf
+*.toml     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.lock     text eol=lf
+*.sh       text eol=lf
+.gitignore text eol=lf
+LICENSE    text eol=lf

@@ -1,0 +1,9 @@
+{
+  "name": "klin",
+  "version": "0.1.0",
+  "description": "Provenance ledger and machine-enforced licence gate for game assets: record where every asset came from and which model produced it, then fail the ship gate on anything the project's own policy excludes.",
+  "author": {
+    "name": "Costa"
+  },
+  "keywords": ["assets", "provenance", "licence", "gamedev", "ledger"]
+}

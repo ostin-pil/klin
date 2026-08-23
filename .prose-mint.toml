@@ -1,0 +1,28 @@
+# Scope and rules for klin's own prose gate.
+#
+# Scope is the user-facing docs plus the plugin's skill and command, since those
+# are read by Claude in a consuming project and carry the same voice.
+# Deliberately out of scope: tests, the manifests (structured config with prose
+# around it), and session logs, which are working notes.
+#
+# hard-wrap is intentionally not enabled: these docs wrap at ~80 columns by
+# choice. The gate targets the structural rhetoric tells.
+
+[scope]
+include = [
+  "README.md",
+  "plugin/skills/klin-ledger/SKILL.md",
+  "plugin/commands/klin-audit.md",
+]
+
+[structural]
+enabled = [
+  "em-dash",
+  "ascii-arrow",
+  "not-X-but-Y",
+  "no-X-no-Y-just-Z",
+  "this-isnt-about-X",
+  "not-only-but",
+  "bold-colon-opener",
+  "ai-attribution",
+]

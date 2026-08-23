@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ostin-pil-klin",
+  "owner": {
+    "name": "Costa"
+  },
+  "description": "Asset acquisition, generation and provenance for game projects. One ledger records where every asset came from, which model produced it and what licence it carries, and the ship gate enforces the consuming project's own licence policy.",
+  "plugins": [
+    {
+      "name": "klin",
+      "description": "Provenance ledger and machine-enforced licence gate for game assets, driven by a per-project manifest. Ships the klin-ledger skill and a /klin-audit command.",
+      "version": "0.1.0",
+      "source": "./plugin",
+      "homepage": "https://github.com/ostin-pil/klin#readme",
+      "category": "development",
+      "keywords": ["assets", "provenance", "licence", "gamedev", "ledger"]
+    }
+  ]
+}

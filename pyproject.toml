@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "klin"
+version = "0.1.0"
+description = "Asset acquisition, generation and provenance for game projects, with a machine-enforced licence gate."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Costa" }]
+keywords = ["assets", "provenance", "licence", "gamedev", "comfyui", "civitai", "huggingface"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+dependencies = ["pyyaml>=6"]
+
+[project.urls]
+Homepage = "https://github.com/ostin-pil/klin"
+
+[project.scripts]
+klin = "klin.cli:main"
+
+[tool.setuptools]
+packages = ["klin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
