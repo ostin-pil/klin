@@ -1,0 +1,29 @@
+# Test gate for klin. The suite is the whole correctness gate: there is no
+# compile step, and no vendor adapter exists yet, so nothing here touches a
+# network or a GPU. Everything the core does is exercised against fixtures.
+#
+# The prose gate (structural-tell linting of the docs) is a separate workflow,
+# prose.yml.
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install klin and pytest
+        # Installing the checkout rather than a published wheel, so the gate
+        # always tests the code in the PR. pyyaml arrives as a dependency.
+        run: pip install . pytest
+      - name: Run the suite
+        run: python -m pytest tests -q
