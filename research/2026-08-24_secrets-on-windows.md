@@ -131,12 +131,19 @@ What mitigates it.
 What it is. A KDBX database plus a scriptable CLI that ships on Windows, macOS
 and Linux. `keepassxc-cli show -q -s -a Password <db> <entry>` prints one
 attribute; `-k` takes a key file, `--no-password` drops the passphrase factor,
-and `-y` takes a YubiKey slot for challenge-response. KDBX4 uses Argon2, the
+and `-y` takes a YubiKey slot for challenge-response. KDBX 4 uses Argon2, the
 file is portable and syncs like any other file, and 2.7 added Windows Hello
 quick unlock.
 
 Where it falls short.
 
+- The format is a footgun. `keepassxc-cli db-create` on 2.7.12 produced a KDBX
+  3.1 database, and only KDBX 4 can use Argon2. KDBX 3.1 falls back to AES-KDF,
+  a plain iterated hash that a GPU parallelises cheaply, and `-t` tunes the
+  iteration count without making it memory-hard. The CLI gives no warning and
+  offers no format flag. For a database whose entire defence is its KDF,
+  because a copy is deliberately synced offsite, that is the difference that
+  matters.
 - The user has to install and maintain KeePassXC.
 - Every invocation wants the database credential, which moves the bootstrap
   problem up one level rather than solving it.
@@ -147,6 +154,10 @@ Where it falls short.
 
 What mitigates it.
 
+- Check the format rather than assuming it. The signature, version and KDF
+  parameters sit in the unencrypted outer header by design, so a database can be
+  identified before anything is unlocked, and a KDBX 3.1 file can be upgraded to
+  KDBX 4 with Argon2id from the GUI without rebuilding it.
 - Put the database credential in Windows Credential Manager and let the tool
   unlock the KDBX with it. You keep a portable, inspectable, syncable database,
   and exactly one bootstrap secret sits in the OS vault.
@@ -280,8 +291,9 @@ all, for the reason in the second section. Neither is a good trade for a tool
 whose job is licence provenance.
 
 The durable layer is a KeePassXC database. It is a file, so it survives the
-machine by being copied off it; it is Argon2-encrypted, so copying it off is
-safe; it locks, and Windows Hello quick unlock makes unlocking it a fingerprint.
+machine by being copied off it; in KDBX 4 it is Argon2-encrypted, so copying it
+off is safe; it locks, and Windows Hello quick unlock makes unlocking it a
+fingerprint.
 That combination is the closest thing Windows has to the Keychain, and the
 portability is what makes it the system of record rather than a curiosity.
 
@@ -389,9 +401,11 @@ rather than arbitrary files, so the KDBX would not land there by accident, but
 the reasoning matters more than the mechanism.
 
 The database goes somewhere reachable with nothing but a Google login: a plain
-`gdrive:` path, and the external drive as the second copy. It is already
-encrypted with Argon2, so an unencrypted transport is the correct choice rather
-than a compromise. Two rules follow. The key file, if the database uses one,
+`gdrive:` path, and the external drive as the second copy. It carries its own
+encryption, so an unencrypted transport is the correct choice rather than a
+compromise, conditional on the format check above: the KDF is the entire
+defence once a copy leaves the machine, and a KDBX 3.1 file does not have the
+one that was assumed. Two rules follow. The key file, if the database uses one,
 never syncs with the database, since together they are the whole credential.
 And the database passphrase is the one secret that lives only in a human head,
 because it is the root of the chain.
