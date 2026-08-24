@@ -21,6 +21,38 @@ it lives in the project's policy document and is transcribed into the project's
 Never invent a licence rule. If the policy document does not settle a case, say
 so and ask, rather than guessing a verdict.
 
+## Fetching from a vendor
+
+When the asset comes from HuggingFace or Civitai, do not hand-write the record.
+`klin fetch` resolves the metadata, classifies the licence, verifies the
+download and writes the record itself:
+
+```
+klin fetch hf <repo-id> --file <filename> --as <subdirectory>
+klin fetch civitai <model-id> [--version <id>] --as <subdirectory>
+```
+
+Add `--dry-run` first when the licence is what you are checking. It resolves and
+classifies without downloading, which on a seventeen-gigabyte checkpoint is the
+difference between a second and an hour.
+
+**When klin says a licence is `unknown`, it means it.** That is not a failure to
+look it up; it is klin refusing to guess. Read the vendor's terms yourself,
+decide, and pass the decision back:
+
+```
+klin fetch hf <repo-id> --file <filename> --families noncommercial
+```
+
+Do not skip this and let the record stand unclassified. `unknown` fails the
+stage rule, which is the point, and an asset classified by guess would pass a
+ship gate that ought to stop it. If the terms do not settle the question, say so
+and ask rather than choosing a family that makes the audit quiet.
+
+A Civitai model with several versions makes klin refuse and list them, because
+picking one silently would fetch a Flux LoRA when the workflow wanted the
+Z-Image variant. Choose with `--version` or `--base-model`.
+
 ## Adding an asset
 
 ```

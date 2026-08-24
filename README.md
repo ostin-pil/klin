@@ -57,6 +57,90 @@ FAIL  rule 2 (no-share-alike)  opengameart-tavern-tools
       [...] It will look like a perfect find. Don't take it.
 ```
 
+## Fetch
+
+```
+klin fetch hf Comfy-Org/flux1-dev --file flux1-dev-fp8.safetensors --as checkpoints
+klin fetch civitai 980106 --as loras
+klin fetch civitai 1041229 --version 2499170 --as loras
+```
+
+Each invocation resolves the vendor's metadata, classifies the licence, streams
+the file while computing its sha256, verifies it, writes a ledger record, and
+tells you to run `klin ledger audit`. Add `--dry-run` to stop after
+classification, which is the cheap way to see what a licence resolves to before
+committing to a download.
+
+**klin never guesses a licence.** HuggingFace publishes an identifier, so the
+adapter records it and lets `policy.py` classify it. `license:other` is not an
+identifier, so it maps to nothing, `policy.py` reports `unknown`, and klin
+prints an instruction to settle it by hand:
+
+```
+klin fetch hf Comfy-Org/flux1-dev --file flux1-dev-fp8.safetensors     --families noncommercial
+```
+
+An explicit `--families` list wins outright, which is the escape hatch
+`policy.py` already documents. An adapter that quietly decided `noncommercial`
+for `license:other` would be right about the repositories somebody checked and
+wrong invisibly about every later one.
+
+Civitai publishes no identifier at all, only permission flags, so the mapping is
+a judgment and it is recorded as one. The derived families and the vendor's raw
+flags both go into the record, and the whole API response is kept in a
+`meta.json` sidecar beside the file, so a later re-classification never needs a
+second download:
+
+| Vendor field | Consequence |
+| --- | --- |
+| `allowCommercialUse` without `Image` or `Sell` | `noncommercial` |
+| `allowCommercialUse` empty, or `[None]` | `noncommercial` |
+| `allowDerivatives: false` | add `noderivatives` |
+| `allowNoCredit: false` | add `attribution` |
+
+The contested row is the first. `Rent` and `RentCivit` grant a generation
+service permission to run the model, which does not answer whether an image made
+with it may be sold, so a model offering only those is treated as
+noncommercial. Records carry a `LicenseRef-` id, SPDX's own convention for terms
+that are not on its list.
+
+### Where files land
+
+`cache_dir` in the manifest, overridden by `KLIN_CACHE`, which is where a
+machine-specific path belongs rather than in a committed file. The layout is
+`<cache>/<vendor>/<id>/<filename>`, with the `meta.json` sidecar alongside.
+
+`--as <subdirectory>` additionally hardlinks the file into `models_dir`
+(or `KLIN_MODELS`) so a downstream tool sees it without a second copy. A
+hardlink rather than a copy because a checkpoint is seventeen gigabytes, and
+rather than a search-path config file because a model tree may already be
+reached through a junction, in which case adding it again registers one
+directory under two names.
+
+### What the guards catch
+
+A vendor that refuses a request does not always say so with a status code. Four
+guards run before any record is written, and a failure deletes the partial file:
+
+1. The content type is on an allowlist, never merely off a denylist. Civitai's
+   edge refuses an unrecognised client with seventeen bytes of `text/plain`, so
+   a rule written against `text/html` alone waves it through to be saved as a
+   model.
+2. The byte count matches the vendor's declared size, where one is published.
+3. A `.safetensors` file starts with a header length and a JSON header that
+   parses.
+4. sha256 is computed while streaming, and checked against the vendor's own
+   hash where one is published.
+
+Downloads land on a `.part` file and are renamed only once every guard passes,
+so an interrupted fetch is never mistaken for a finished one. `--resume`
+continues one over HTTP Range.
+
+Every request carries a User-Agent naming klin. Without one, Civitai's edge
+answers `403 error code: 1010`, which reads like a rejected credential and is
+not. The block is on `Python-urllib` specifically rather than on non-browser
+clients, so klin says what it is instead of claiming to be Chrome.
+
 ## Three decisions worth knowing about
 
 **The policy document stays authoritative.** A project's licence policy is
@@ -156,6 +240,10 @@ klin/                    the Python package
   render.py              the marked block inside a prose document
   manifest.py            the per-project manifest
   secrets.py             credential lookup, references only in the manifest
+  net.py                 streaming downloads and the four guards
+  fetch/                 vendor adapters, discovered rather than listed
+    hf.py                huggingface.co
+    civitai.py           civitai.com
   cli.py                 fetch | gen | conform | ledger | secret
 plugin/                  the Claude Code plugin: skill and command
 tests/
@@ -164,7 +252,10 @@ tests/
 
 Roles are the CLI's verbs and vendors are adapters underneath them. Adding
 Civitai, HuggingFace or ComfyUI support is a new adapter module, never a new
-plugin and never a new repo.
+plugin and never a new repo. `fetch` enforces that by discovery: any module in
+`klin/fetch/` declaring `NAME` and `configure` becomes a subcommand, so vendor
+three is one new file and no edit to `cli.py`. There is a test that writes a
+module into the package and checks it appears.
 
 ## Licence
 

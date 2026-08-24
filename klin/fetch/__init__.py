@@ -1,0 +1,278 @@
+"""Vendor adapters, and the registry that finds them.
+
+`cli` promises that "adding one must never require touching this file's
+structure". That promise is kept by discovery rather than by a list: every
+module in this package that declares `NAME` and `configure` becomes a
+subcommand of `klin fetch`. Vendor three is a new file in this directory and no
+edit anywhere else, which is a claim the test suite checks rather than trusts.
+
+What every adapter owes, beyond fetching bytes:
+
+**Never guess a licence.** klin holds no opinions about licences; the consuming
+project's policy document does. An adapter maps a vendor field only where the
+mapping is exact, and where it is not, records the vendor's own words verbatim
+and says so loudly. `policy.families` classifies an unmapped identifier as
+`unknown`, which fails the stage rule visibly. An adapter that invented
+`noncommercial` for `license:other` would be a worse bug than one that refuses,
+because a refusal appears in the audit and an invention does not.
+
+**Record what was mapped from what.** Where a vendor publishes permission flags
+instead of an identifier, the derived families and the raw flags both go into
+the record. A reader who disagrees with the mapping can then see the input, and
+the sidecar keeps the whole response so a re-classification never needs a
+re-download.
+"""
+
+import importlib
+import io
+import json
+import os
+import pkgutil
+import time
+
+from .. import ledger, manifest, net, policy, secrets
+
+#: Where `--as` lands when a project wires the cache into a downstream tool.
+#: Optional: without it a fetch still succeeds and reports the cache path.
+MODELS_ENV = "KLIN_MODELS"
+
+
+class FetchError(Exception):
+    pass
+
+
+def adapters():
+    """Every adapter module in this package, by name.
+
+    Discovery, not a list. A module that fails to import is a bug worth
+    surfacing immediately rather than a vendor that silently goes missing.
+    """
+    found = {}
+    for info in pkgutil.iter_modules(__path__):
+        if info.name.startswith("_"):
+            continue
+        module = importlib.import_module("%s.%s" % (__name__, info.name))
+        name = getattr(module, "NAME", None)
+        if not name or not hasattr(module, "configure"):
+            continue
+        found[name] = module
+    return found
+
+
+def configure(parser):
+    """Wire every discovered adapter in as a subcommand."""
+    vendors = parser.add_subparsers(dest="vendor")
+    for name in sorted(adapters()):
+        module = adapters()[name]
+        sub = vendors.add_parser(name, help=getattr(module, "HELP", None))
+        sub.add_argument(
+            "--as",
+            dest="as_kind",
+            default=None,
+            help="subdirectory of the models tree to link the file into",
+        )
+        sub.add_argument(
+            "--families",
+            default=None,
+            help="comma-separated licence families, set by hand; wins outright",
+        )
+        sub.add_argument("--dest", default=None, help="write here instead of the cache")
+        sub.add_argument("--resume", action="store_true", help="continue a partial file")
+        sub.add_argument(
+            "--force",
+            action="store_true",
+            help="re-download even when a verified copy is already cached",
+        )
+        sub.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="resolve and classify, but download nothing",
+        )
+        module.configure(sub)
+        sub.set_defaults(func=_run_adapter, module=module)
+    return parser
+
+
+def _run_adapter(args, stream):
+    module = args.module
+    data = {}
+    path = args.manifest or os.path.join(args.repo, manifest.DEFAULT_MANIFEST)
+    if os.path.isfile(path):
+        data = manifest.load(path)
+    return module.run(args, Context(args, data, stream))
+
+
+class Context(object):
+    """What an adapter is handed: paths, credentials, and the output stream.
+
+    Deliberately narrow. An adapter resolves metadata, classifies a licence and
+    streams a file; it does not read the policy rules, and it does not decide
+    whether a record passes a gate.
+    """
+
+    def __init__(self, args, data, stream):
+        self.args = args
+        self.manifest = data
+        self.stream = stream
+        self.repo = args.repo
+
+    def say(self, text=""):
+        self.stream.write(text + "\n")
+
+    def cache_dir(self):
+        return manifest.cache_dir(self.manifest, default=None)
+
+    def models_dir(self):
+        value = os.environ.get(MODELS_ENV) or self.manifest.get("models_dir")
+        if not value:
+            return None
+        return os.path.normpath(os.path.expanduser(os.path.expandvars(str(value))))
+
+    def token(self, name):
+        """A credential, or None when the vendor does not need one.
+
+        Resolution order is the secrets module's business, not the adapter's.
+        A missing credential is not an error here: some vendors are open, and
+        the download itself reports a 401 with a message that says what to do.
+        """
+        try:
+            return secrets.resolve(name, manifest.secrets(self.manifest).get(name))
+        except secrets.SecretError:
+            return None
+
+    def ledger_path(self):
+        return manifest.resolve(self.manifest, "ledger", self.repo)
+
+
+def target_path(ctx, vendor, ident, filename):
+    """`<cache>/<vendor>/<id>/<filename>`, or `--dest` when given."""
+    if ctx.args.dest:
+        dest = os.path.expanduser(os.path.expandvars(ctx.args.dest))
+        if os.path.isdir(dest):
+            return os.path.join(dest, filename)
+        return dest
+    return os.path.join(ctx.cache_dir(), vendor, str(ident), filename)
+
+
+def write_sidecar(path, payload):
+    """The vendor's raw metadata, beside the file.
+
+    This is what makes a later re-classification possible without fetching
+    seventeen gigabytes again. It is also the evidence for the mapping: when
+    somebody disputes a derived family, the input is on disk.
+    """
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent)
+    sidecar = os.path.join(parent, "meta.json")
+    with io.open(sidecar, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+    return sidecar
+
+
+def link_into_models(ctx, path, kind):
+    """Hardlink a cached file into the models tree, so it exists once.
+
+    A copy would double the disk cost of every checkpoint, and a config file
+    listing a second search root is not always available: a tree may already be
+    reached through a junction, in which case adding it again registers the same
+    directory twice under two names. A hardlink sidesteps both, and falls back
+    to a copy when the cache and the tree are on different volumes.
+    """
+    if not kind:
+        return None
+    root = ctx.models_dir()
+    if not root:
+        ctx.say(
+            "note: --as %s given but no models tree configured; set %s or a "
+            "'models_dir' manifest key to have klin link it in" % (kind, MODELS_ENV)
+        )
+        return None
+    target_dir = os.path.join(root, kind)
+    if not os.path.isdir(target_dir):
+        os.makedirs(target_dir)
+    target = os.path.join(target_dir, os.path.basename(path))
+    if os.path.exists(target):
+        if os.path.samefile(target, path):
+            return target
+        os.remove(target)
+    try:
+        os.link(path, target)
+    except OSError:
+        import shutil
+
+        shutil.copy2(path, target)
+        ctx.say("note: hardlink unavailable across volumes; copied instead")
+    return target
+
+
+def classify(ctx, record, derived=None):
+    """Settle a record's licence families, and say so when nobody could.
+
+    Precedence, highest first: `--families` on the command line, then whatever
+    the adapter derived from vendor fields, then `policy.families` reading the
+    identifier. The first two write `licence.families` onto the record, which
+    `policy.families` documents as winning outright.
+    """
+    override = ctx.args.families
+    if override:
+        record["licence"]["families"] = sorted(
+            part.strip() for part in override.split(",") if part.strip()
+        )
+        return "hand", set(record["licence"]["families"])
+
+    if derived is not None:
+        record["licence"]["families"] = sorted(derived)
+        return "derived", set(derived)
+
+    got = policy.families(record)
+    if got in ({"unknown"}, {"unlicensed"}):
+        return "unknown", got
+    return "identifier", got
+
+
+def report_classification(ctx, record, how, found):
+    """Print the classification, and demand a human where one is needed."""
+    ident = ledger.field(record, "licence.id") or "(none recorded)"
+    ctx.say("licence: %s -> %s (%s)" % (ident, ", ".join(sorted(found)) or "none", how))
+    if how == "unknown":
+        ctx.say("")
+        ctx.say("  This licence maps to nothing klin understands, so it has been")
+        ctx.say("  recorded verbatim and left unclassified. That is deliberate:")
+        ctx.say("  klin does not guess licences, and an invented family would")
+        ctx.say("  pass an audit that ought to stop. Classify it by hand:")
+        ctx.say("")
+        ctx.say("      klin fetch ... --families noncommercial")
+        ctx.say("")
+        ctx.say("  Families: %s" % ", ".join(policy.KNOWN_FAMILIES))
+        ctx.say("")
+
+
+def record_for(vendor, ident, filename):
+    """A blank record with the adapter and retrieval date already filled in."""
+    record = ledger.blank("%s-%s" % (vendor, ident), kind="model")
+    record["source"]["adapter"] = vendor
+    record["source"]["retrieved"] = time.strftime("%Y-%m-%d")
+    return record
+
+
+def finish(ctx, record, facts, linked=None):
+    """Write the record and tell the user what to run next."""
+    record["sha256"] = facts["sha256"]
+    paths = [facts["path"]]
+    if linked:
+        paths.append(linked)
+    record["paths"] = paths
+
+    path = ctx.ledger_path()
+    ledger.add(path, record, replace=True)
+
+    ctx.say("")
+    ctx.say("%s  %.2f GiB" % (facts["path"], facts["bytes"] / float(1 << 30)))
+    if linked:
+        ctx.say("linked  %s" % linked)
+    ctx.say("sha256  %s" % facts["sha256"])
+    ctx.say("recorded %s in %s" % (record["id"], os.path.relpath(path, ctx.repo)))
+    ctx.say("")
+    ctx.say("next: klin ledger audit")
+    return 0
