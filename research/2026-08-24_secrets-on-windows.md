@@ -354,6 +354,11 @@ as an attack surface: KeePassXC now includes the username in the pipe name
 after exactly that was reported, which is a reason to stay current rather than
 a reason to avoid the mechanism.
 
+None of that is built or configured. `2026-08-24_keepassxc-resolver-handover.md`
+carries the state, the open decisions and the first steps, including one that
+has to be settled before any code: the protocol matches entries by URL, and the
+reference shape specified here is a group path.
+
 Seeding runs the other way and stays a human action: read a value out of
 KeePassXC, put it in the OS vault with `klin secret set`. After a board swap the
 whole recovery is unlock the database, reseed, carry on. Automating that
