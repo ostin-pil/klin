@@ -654,3 +654,20 @@ def test_reuse_needs_no_declared_size(tmp_path, monkeypatch):
     monkeypatch.setattr(net, "urlopen", _explode)
     facts = net.download("https://vendor.invalid/m", dest)
     assert facts["reused"] is True
+
+
+def test_a_file_with_a_sibling_part_is_not_reused(tmp_path, monkeypatch):
+    """Somebody else may be mid-download at this path.
+
+    This writer renames only once every guard has passed, so a file under its
+    final name is complete by construction. A fetcher that writes straight to
+    the final name is not, and a shared cache has more than one writer in it.
+    """
+    body = safetensors_bytes()
+    dest = str(tmp_path / "m.safetensors")
+    io.open(dest, "wb").write(body)
+    io.open(dest + ".part", "wb").write(b"someone else is working here")
+
+    serve(monkeypatch, FakeResponse(body, {"Content-Type": "application/octet-stream"}))
+    facts = net.download("https://vendor.invalid/m", dest)
+    assert facts["reused"] is False

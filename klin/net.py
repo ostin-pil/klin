@@ -181,6 +181,12 @@ def verify_existing(dest, expected_size=None):
     """
     if not os.path.isfile(dest):
         return None
+    if os.path.exists(dest + ".part"):
+        # A sibling .part means somebody is mid-download here. This writer
+        # renames only after every guard passes, so its own final name is
+        # complete by construction; another fetcher writing straight to the
+        # final name is not, and that is the race this refuses to join.
+        return None
     size = os.path.getsize(dest)
     if expected_size and int(size) != int(expected_size):
         return None
