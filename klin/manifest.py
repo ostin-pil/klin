@@ -41,6 +41,44 @@ def resolve(manifest, key, repo, default=None):
     return os.path.normpath(os.path.join(repo, value))
 
 
+#: An environment override for the cache location. A manifest is committed and
+#: describes the project; which volume on this machine has room for eighty
+#: gigabytes of weights is not a property of the project and does not belong in
+#: it. Same reasoning the lifecycle manifest already applies to a local engine
+#: path.
+CACHE_ENV = "KLIN_CACHE"
+
+
+def cache_dir(manifest, default=None):
+    """Resolve `cache_dir` to an absolute path outside the repo.
+
+    Deliberately not `resolve()`. That joins its value to the repo root, which
+    is right for `ledger` and `staging_dir` and wrong here. The cache is defined
+    as living outside every checkout, and its value carries environment
+    variables on purpose so one committed manifest can describe several
+    machines. Joining `%LOCALAPPDATA%/klin/cache` onto a repo root produces a
+    literal `%LOCALAPPDATA%` directory inside the tree — wrong in both halves,
+    and wrong quietly, because that is a perfectly legal directory name and the
+    download would succeed into it.
+    """
+    value = os.environ.get(CACHE_ENV) or manifest.get("cache_dir", default)
+    if value is None:
+        raise ManifestError("manifest has no 'cache_dir', and %s is unset" % CACHE_ENV)
+    expanded = os.path.expanduser(os.path.expandvars(str(value)))
+    if "%" in expanded or expanded.startswith("$"):
+        raise ManifestError(
+            "cache_dir is %r after expansion, so a variable in it is not set on "
+            "this machine. Set it, or set %s." % (expanded, CACHE_ENV)
+        )
+    if not os.path.isabs(expanded):
+        raise ManifestError(
+            "cache_dir resolved to %r, which is not absolute. The cache lives "
+            "outside every checkout, so a repo-relative path cannot be what was "
+            "meant; give an absolute path or set %s." % (expanded, CACHE_ENV)
+        )
+    return os.path.normpath(expanded)
+
+
 def rules(manifest):
     got = manifest.get("rules") or []
     if not isinstance(got, list):
