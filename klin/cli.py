@@ -5,9 +5,13 @@
     klin ledger audit [--ship]
     klin ledger render [--check]
     klin secret set <name> | get <name> | list | rm <name> | doctor
+    klin fetch <vendor> ...
 
 Verbs are roles. Vendors arrive later as adapters under `fetch` and `gen`, and
-adding one must never require touching this file's structure.
+adding one must never require touching this file's structure. `fetch` keeps
+that promise by delegating: it asks `klin.fetch` for its subcommands, and that
+package discovers them from the modules present. Vendor three is a new file in
+`klin/fetch/` and no edit here.
 """
 
 import argparse
@@ -18,7 +22,7 @@ import os
 import sys
 import textwrap
 
-from . import ledger, manifest, policy, render, secrets
+from . import fetch, ledger, manifest, net, policy, render, secrets
 
 WRAP = 78
 
@@ -306,6 +310,10 @@ def build_parser():
     )
     rendering.set_defaults(func=cmd_render)
 
+    fetch.configure(
+        verbs.add_parser("fetch", help="acquire an asset from a vendor")
+    )
+
     sec = verbs.add_parser("secret", help="credentials an adapter needs")
     kinds = sec.add_subparsers(dest="action")
 
@@ -356,6 +364,8 @@ def main(argv=None, stream=None):
         ledger.LedgerError,
         render.RenderError,
         secrets.SecretError,
+        net.NetError,
+        fetch.FetchError,
     ) as exc:
         _out(stream, "klin: %s" % exc)
         return 2
