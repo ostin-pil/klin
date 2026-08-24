@@ -16,7 +16,16 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: Multimedia :: Graphics :: 3D Modeling",
 ]
-dependencies = ["pyyaml>=6"]
+# keyring reaches the operating system's credential store: Credential Manager on
+# Windows, Keychain on macOS, Secret Service on Linux. On Windows its only
+# dependency is pywin32-ctypes, which is pure Python, so `uv tool install klin`
+# still needs no compiler on any platform.
+dependencies = ["pyyaml>=6", "keyring>=25"]
+
+[project.optional-dependencies]
+# Reserved for reading a KeePass database directly. pykeepass pulls argon2-cffi,
+# pycryptodomex and lxml, so it stays out of the base install by design.
+keepass = ["pykeepass>=4.1"]
 
 [project.urls]
 Homepage = "https://github.com/ostin-pil/klin"

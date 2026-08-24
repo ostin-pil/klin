@@ -13,6 +13,8 @@ import io
 import json
 import os
 
+from . import secrets
+
 FIELDS = (
     "id",
     "kind",
@@ -103,7 +105,23 @@ def save(path, records):
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def sanitise(record):
+    """Strip credential-shaped query parameters out of a record's URLs.
+
+    Every record here is committed. A fetch adapter that follows a presigned or
+    tokenised download link would otherwise write that link into the tree, and
+    a URL is the field where that happens by accident rather than by mistake.
+    The path and host are the provenance and survive.
+    """
+    for section, key in (("source", "url"), ("source", "mirror_of"), ("licence", "url")):
+        node = record.get(section)
+        if isinstance(node, dict) and node.get(key):
+            node[key] = secrets.scrub_url(node[key])
+    return record
+
+
 def add(path, record, replace=False):
+    record = sanitise(record)
     records = load(path)
     existing = [r for r in records if r["id"] == record["id"]]
     if existing and not replace:

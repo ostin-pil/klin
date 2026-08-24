@@ -11,11 +11,18 @@ on:
     branches: [main]
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        # The credential store is the one part of klin whose behaviour differs
+        # per platform, and Windows is where it is developed. One entry keeps
+        # that path exercised by something other than the author's machine.
+        include:
+          - os: windows-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
