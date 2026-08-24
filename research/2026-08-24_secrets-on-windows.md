@@ -335,11 +335,44 @@ conventional variable such as `HF_TOKEN`, then an external reference declared in
 the manifest, then the `keyring` store. Step three is where the KDBX resolver
 lands, and where `op` or `bw` could land instead for anyone who prefers them.
 
+When that resolver is built it must not shell out to `keepassxc-cli`, which is
+the obvious implementation and the wrong one: every invocation wants the
+database credential, so klin would end up holding the passphrase after all.
+The right mechanism is KeePassXC's browser integration protocol. A client
+associates once, the user approves that association in the KeePassXC window,
+and the association key is what gets stored, in the OS vault where a key
+belongs. Reads then travel over a local named pipe to an already-unlocked
+KeePassXC, and the passphrase never leaves the application. KeePassXC can also
+require confirmation per access, which is the per-item prompt this document
+spent its opening section establishing that Windows does not have. Reached
+this way, it does.
+
+Two limits come with it. It needs KeePassXC running and unlocked, so it is
+useless in CI and headless runs, which is what the environment step exists for.
+And the Windows named-pipe namespace is global, so the pipe is worth treating
+as an attack surface: KeePassXC now includes the username in the pipe name
+after exactly that was reported, which is a reason to stay current rather than
+a reason to avoid the mechanism.
+
 Seeding runs the other way and stays a human action: read a value out of
 KeePassXC, put it in the OS vault with `klin secret set`. After a board swap the
 whole recovery is unlock the database, reseed, carry on. Automating that
 seeding would mean klin holding the database credential, which trades the one
 property the database is there for.
+
+That constraint decides what an agent may reach, and the answer is the cache
+and never the database. An agent given the passphrase would put it in a command
+string, a transcript, and whatever archives that transcript, and the passphrase
+opens every group, including the infrastructure credentials that no adapter
+should be able to touch. What the cache holds instead is read-scoped vendor
+tokens that are cheap to rotate. The separation is the point: an agent reaches
+a deliberately smaller thing.
+
+A key file is the tempting shortcut here and is worse than the problem. It
+makes unlocking non-interactive by turning the root credential into a file
+readable by anything running as the user, which is the Windows gap this whole
+document is about, and it does so for the one credential that was specifically
+kept out of reach.
 
 ## One database, and whose it is
 
@@ -456,6 +489,9 @@ second line and the database is the third.
 - [keepassxc-cli manual](https://man.archlinux.org/man/keepassxc-cli.1.en)
 - [Using python-keyring with KeePassXC](https://github.com/jaraco/keyring/issues/448)
 - [pykeepass on PyPI](https://pypi.org/project/pykeepass/)
+- [keepassxc-browser protocol](https://github.com/keepassxreboot/keepassxc-browser/blob/master/keepassxc-protocol.md)
+- [keepassxc-proxy-client, a Python client for it](https://pypi.org/project/keepassxc-proxy-client/)
+- [KeePassXC issue 9393: verify user ownership of the browser pipe](https://github.com/keepassxreboot/keepassxc/issues/9393)
 - [SecretManagement and SecretStore overview](https://learn.microsoft.com/en-us/powershell/utility-modules/secretmanagement/overview?view=ps-modules)
 - [1Password CLI secret references](https://www.1password.dev/cli/secret-references)
 - [Bitwarden CLI trojanised on npm, April 2026](https://www.csoonline.com/article/4162865/bitwarden-cli-password-manager-trojanized-in-supply-chain-attack.html)
