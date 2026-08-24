@@ -150,6 +150,7 @@ def run(args, ctx):
         expected_size=size,
         resume=args.resume,
         stream=ctx.stream,
+        force=args.force,
     )
     record["source"]["mirror_of"] = facts["final_url"]
 

@@ -557,3 +557,64 @@ def test_an_unclassified_record_fails_the_stage_rule(repo):
     code, out = _audit(made)
     assert code != 0
     assert "rule 0" in out
+
+
+# --------------------------------------------------------------------------
+# Cache reuse. A cache is only a cache if the second run is cheap.
+# --------------------------------------------------------------------------
+
+def _explode(*a, **k):
+    raise AssertionError("the network was used when the cache should have served")
+
+
+def test_a_verified_cached_file_is_reused(tmp_path, monkeypatch):
+    body = safetensors_bytes()
+    dest = str(tmp_path / "m.safetensors")
+    io.open(dest, "wb").write(body)
+
+    monkeypatch.setattr(net, "urlopen", _explode)
+    facts = net.download("https://vendor.invalid/m", dest, expected_size=len(body))
+    assert facts["reused"] is True
+    assert facts["sha256"] == __import__("hashlib").sha256(body).hexdigest()
+
+
+def test_a_cached_file_of_the_wrong_size_is_not_reused(tmp_path, monkeypatch):
+    """Reuse checks the file, never a memory of having downloaded it."""
+    dest = str(tmp_path / "m.safetensors")
+    io.open(dest, "wb").write(safetensors_bytes(payload=b"\x00" * 8))
+
+    good = safetensors_bytes()
+    serve(monkeypatch, FakeResponse(good, {"Content-Type": "application/octet-stream"}))
+    facts = net.download("https://vendor.invalid/m", dest, expected_size=len(good))
+    assert facts["reused"] is False
+    assert facts["bytes"] == len(good)
+
+
+def test_a_corrupt_cached_file_is_not_reused(tmp_path, monkeypatch):
+    dest = str(tmp_path / "m.safetensors")
+    io.open(dest, "wb").write(b"not safetensors at all")
+
+    good = safetensors_bytes()
+    serve(monkeypatch, FakeResponse(good, {"Content-Type": "application/octet-stream"}))
+    facts = net.download("https://vendor.invalid/m", dest)
+    assert facts["reused"] is False
+
+
+def test_force_ignores_the_cache(tmp_path, monkeypatch):
+    body = safetensors_bytes()
+    dest = str(tmp_path / "m.safetensors")
+    io.open(dest, "wb").write(body)
+
+    serve(monkeypatch, FakeResponse(body, {"Content-Type": "application/octet-stream"}))
+    facts = net.download("https://vendor.invalid/m", dest, force=True)
+    assert facts["reused"] is False
+
+
+def test_reuse_needs_no_declared_size(tmp_path, monkeypatch):
+    body = safetensors_bytes()
+    dest = str(tmp_path / "m.safetensors")
+    io.open(dest, "wb").write(body)
+
+    monkeypatch.setattr(net, "urlopen", _explode)
+    facts = net.download("https://vendor.invalid/m", dest)
+    assert facts["reused"] is True

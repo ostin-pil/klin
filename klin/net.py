@@ -164,13 +164,67 @@ def check_safetensors(path):
     return header
 
 
-def download(url, dest, token=None, expected_size=None, resume=False, stream=None):
+def verify_existing(dest, expected_size=None):
+    """Facts about a file already on disk, or None when it cannot be trusted.
+
+    A cache is only a cache if a second run is cheap. Re-fetching seventeen
+    gigabytes to rediscover bytes that are already correct is the difference
+    between a session that starts and one that waits, so a file that passes the
+    same guards a fresh download would pass is accepted as it stands.
+
+    Every guard still runs. The size must match where one is declared, the
+    format must parse, and the digest is recomputed rather than remembered,
+    because a remembered digest proves the download succeeded once and says
+    nothing about the file that is there now.
+    """
+    if not os.path.isfile(dest):
+        return None
+    size = os.path.getsize(dest)
+    if expected_size and int(size) != int(expected_size):
+        return None
+    if dest.endswith(".safetensors"):
+        try:
+            check_safetensors(dest)
+        except NetError:
+            return None
+    digest = hashlib.sha256()
+    with io.open(dest, "rb") as handle:
+        for block in iter(lambda: handle.read(CHUNK), b""):
+            digest.update(block)
+    return {
+        "path": dest,
+        "bytes": size,
+        "sha256": digest.hexdigest(),
+        "content_type": None,
+        "final_url": None,
+        "reused": True,
+    }
+
+
+def download(
+    url,
+    dest,
+    token=None,
+    expected_size=None,
+    resume=False,
+    stream=None,
+    force=False,
+):
     """Stream `url` to `dest`, verifying as it goes. Returns a facts dict.
 
     The file is written to `<dest>.part` and renamed only once every guard has
     passed, so an interrupted or refused download can never be mistaken for a
     finished one by anything that looks at the directory.
     """
+    if not force:
+        already = verify_existing(dest, expected_size)
+        if already is not None:
+            if stream is not None:
+                stream.write(
+                    "already cached and verified: %s\n" % os.path.basename(dest)
+                )
+            return already
+
     parent = os.path.dirname(dest)
     if parent and not os.path.isdir(parent):
         os.makedirs(parent)
@@ -254,6 +308,7 @@ def download(url, dest, token=None, expected_size=None, resume=False, stream=Non
         "bytes": written,
         "sha256": digest.hexdigest(),
         "content_type": content_type,
+        "reused": False,
         # Scrubbed here rather than left to `ledger.sanitise`, so a signed CDN
         # URL never sits in a record even briefly.
         "final_url": secrets.scrub_url(final_url),

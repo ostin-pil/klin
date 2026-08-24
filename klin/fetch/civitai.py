@@ -228,6 +228,7 @@ def run(args, ctx):
         expected_size=size,
         resume=args.resume,
         stream=ctx.stream,
+        force=args.force,
     )
 
     # Civitai publishes a hash, so the computed digest can be checked against

@@ -79,6 +79,11 @@ def configure(parser):
         sub.add_argument("--dest", default=None, help="write here instead of the cache")
         sub.add_argument("--resume", action="store_true", help="continue a partial file")
         sub.add_argument(
+            "--force",
+            action="store_true",
+            help="re-download even when a verified copy is already cached",
+        )
+        sub.add_argument(
             "--dry-run",
             action="store_true",
             help="resolve and classify, but download nothing",
