@@ -140,11 +140,145 @@ def test_hf_other_is_unknown_not_guessed():
     assert policy.families(record) == {"unknown"}
 
 
-def test_hf_licence_id_reads_tag_then_card():
-    assert hf._licence_id({"tags": ["diffusers", "license:apache-2.0"]}) == "apache-2.0"
-    assert hf._licence_id({"tags": [], "cardData": {"license": "mit"}}) == "mit"
-    assert hf._licence_id({"tags": [], "cardData": {"license": ["mit"]}}) == "mit"
-    assert hf._licence_id({"tags": [], "cardData": {}}) is None
+def test_hf_licence_fields_read_tag_then_card():
+    assert hf.licence_fields({"tags": ["diffusers", "license:apache-2.0"]})[0] == "apache-2.0"
+    assert hf.licence_fields({"tags": [], "cardData": {"license": "mit"}})[0] == "mit"
+    assert hf.licence_fields({"tags": [], "cardData": {"license": ["mit"]}})[0] == "mit"
+    assert hf.licence_fields({"tags": [], "cardData": {}})[0] is None
+
+
+# --------------------------------------------------------------------------
+# `license: other` is a statement about the Hub's vocabulary, not the licence.
+# The answer is in the two fields beside it.
+# --------------------------------------------------------------------------
+
+#: Verbatim from the Hub, 2026-08-24. Both FLUX repositories say the same
+#: thing, and both said it while klin was reporting them as unclassifiable.
+FLUX_CARD = {
+    "tags": ["diffusers", "license:other"],
+    "cardData": {
+        "license": "other",
+        "license_name": "flux-1-dev-non-commercial-license",
+        "license_link": (
+            "https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md"
+        ),
+    },
+}
+
+#: The PS1 Style Flux mirror. Its link is not prose: the query string is
+#: Civitai's permission flags, machine-readable.
+BESPOKE_CARD = {
+    "tags": ["license:other"],
+    "cardData": {
+        "license": "other",
+        "license_name": "bespoke-lora-trained-license",
+        "license_link": (
+            "https://multimodal.art/civitai-licenses?allowNoCredit=True"
+            "&allowCommercialUse=Image&allowDerivatives=True"
+            "&allowDifferentLicense=True"
+        ),
+    },
+}
+
+
+def test_the_name_and_link_beside_other_are_read():
+    """The whole defect: klin read `other` and stopped."""
+    ident, name, link = hf.licence_fields(FLUX_CARD)
+    assert ident == "other"
+    assert name == "flux-1-dev-non-commercial-license"
+    assert link.endswith("LICENSE.md")
+
+
+def test_a_licence_named_noncommercial_is_still_not_classified():
+    """Reading is not guessing.
+
+    The name contains the words and the answer is almost certainly
+    noncommercial, but deriving a family from a substring is the invention this
+    module refuses. It stays `unknown` until a human says otherwise; what
+    changed is that the human is now shown the name and the link.
+    """
+    record = ledger.blank("x", kind="model")
+    record["licence"]["id"] = "other"
+    record["licence"]["name"] = "flux-1-dev-non-commercial-license"
+    assert policy.families(record) == {"unknown"}
+
+
+def test_a_civitai_flag_link_resolves_without_a_human():
+    """Structured data, not a name to pattern-match."""
+    flags = hf.flags_from_link(BESPOKE_CARD["cardData"]["license_link"])
+    assert flags["allowCommercialUse"] == ["Image"]
+    assert flags["allowDerivatives"] is True
+    assert flags["allowNoCredit"] is True
+
+    families, why = civitai.derive_families(flags)
+    assert families == set()
+    assert why == []
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("allowCommercialUse=Image", set()),
+        ("allowCommercialUse=Sell", set()),
+        ("allowCommercialUse=Image,Sell", set()),
+        ("allowCommercialUse=Rent", {"noncommercial"}),
+        ("allowCommercialUse=RentCivit", {"noncommercial"}),
+        ("allowCommercialUse=Image&allowDerivatives=False", {"noderivatives"}),
+        ("allowCommercialUse=Image&allowNoCredit=False", {"attribution"}),
+        (
+            "allowCommercialUse=Rent&allowDerivatives=False&allowNoCredit=False",
+            {"noncommercial", "noderivatives", "attribution"},
+        ),
+    ],
+)
+def test_flag_links_map_exactly_as_the_civitai_api_does(query, expected):
+    """One table, two vendors. A second mapping would be a second thing to drift."""
+    link = "https://multimodal.art/civitai-licenses?" + query
+    flags = hf.flags_from_link(link)
+    assert flags is not None
+    assert civitai.derive_families(flags)[0] == expected
+
+
+def test_an_ordinary_licence_link_is_not_treated_as_flags():
+    assert hf.flags_from_link(FLUX_CARD["cardData"]["license_link"]) is None
+    assert hf.flags_from_link(None) is None
+    assert hf.flags_from_link("https://example.invalid/terms") is None
+
+
+def test_a_flag_link_with_no_flags_is_not_an_answer():
+    """An empty query is a malformed link, not a grant of nothing.
+
+    Reading it as "no permissions, therefore noncommercial" would be a guess
+    dressed as a derivation, and it would be a confident one. Falling through to
+    `unknown` puts a human on it instead, which is the whole design.
+    """
+    assert hf.flags_from_link("https://multimodal.art/civitai-licenses?") is None
+    assert hf.flags_from_link("https://multimodal.art/civitai-licenses") is None
+
+
+def test_a_real_identifier_carries_no_name_or_link():
+    """The shape that makes one lookup enough rather than two code paths."""
+    ident, name, link = hf.licence_fields(
+        {"tags": ["license:apache-2.0"], "cardData": {"license": "apache-2.0"}}
+    )
+    assert ident == "apache-2.0"
+    assert name is None and link is None
+
+
+def test_a_licence_url_keeps_its_query_string_through_the_ledger():
+    """The scrubber must not eat the evidence.
+
+    `ledger.sanitise` strips credential-shaped query parameters from record
+    URLs, and here the query parameters *are* the licence. None of these names
+    match the credential pattern today; this test is what fails if that pattern
+    is ever widened.
+    """
+    record = ledger.blank("x", kind="model")
+    record["licence"]["url"] = BESPOKE_CARD["cardData"]["license_link"]
+    cleaned = ledger.sanitise(record)
+    assert "allowCommercialUse=Image" in cleaned["licence"]["url"]
+    assert "allowDerivatives=True" in cleaned["licence"]["url"]
+    assert "allowNoCredit=True" in cleaned["licence"]["url"]
 
 
 # --------------------------------------------------------------------------
