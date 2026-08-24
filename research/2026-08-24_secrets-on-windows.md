@@ -318,6 +318,63 @@ whole recovery is unlock the database, reseed, carry on. Automating that
 seeding would mean klin holding the database credential, which trades the one
 property the database is there for.
 
+## One database, and whose it is
+
+The database is the person's, not a project's. Splitting it per repository
+multiplies the thing that is actually hard: each database would need its own
+passphrase, its own sync, its own backup and its own restore drill, and the
+point of a system of record is that there is one place to protect properly.
+
+klin originates the convention without owning the file. klin is the tool that
+reads from the database, so klin defines how entries are addressed and where
+the file's location is configured. A consuming project names entries and
+nothing else, because its manifest is committed and the file's path is a fact
+about a machine.
+
+Groups inside the database do the separation that separate files would have
+done badly:
+
+```
+vault.kdbx
+  klin/
+    civitai              a klin adapter reads this
+    huggingface          a klin adapter reads this
+  Barinn/
+    rclone-crypt         rclone reads this, klin never does
+    forgejo-token
+    google-oauth-client
+```
+
+That layout answers the question of where a project-only secret goes. It goes
+in the same database, under that project's group, and it is not declared in
+that project's klin manifest. The test for the `secrets:` block is narrow: does
+a klin adapter read it? The rclone crypt password is a secret and belongs in
+the database, but nothing in klin will ever ask for it, so klin should not
+claim to manage it. Same database, different consumer.
+
+The consequence for the manifest is that a reference names an entry path and
+never a file path:
+
+```yaml
+secrets:
+  huggingface:
+    env: HF_TOKEN
+    ref: keepassxc://klin/huggingface     # shape only, no resolver yet
+```
+
+That shape is validated today and resolved by nothing, and a declared `ref`
+raises rather than falling through to the store, deliberately: a reference the
+tool cannot follow is a broken promise, and quietly serving a cached value
+instead is the silent fallback this document warns about everywhere else. So
+nothing declares a `ref` until the resolver exists. Until then a secret is
+named, stored, and read from the store.
+
+Resolving one leaves the file's location to be configured per machine rather
+than per project. klin has no user-level configuration today, and the
+environment is the lightest thing that fits the existing pattern, so
+`KLIN_KEEPASS_DB` is where that lands when the resolver ships. Naming the database after a project would
+undercut all of the above, so it is named for neither.
+
 ## Where the database lives
 
 The KDBX has to be reachable without the machine it was made on, and the
