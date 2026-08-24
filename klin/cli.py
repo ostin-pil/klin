@@ -4,19 +4,21 @@
     klin ledger add --id <id> [--from record.json] [--replace]
     klin ledger audit [--ship]
     klin ledger render [--check]
+    klin secret set <name> | get <name> | list | rm <name> | doctor
 
 Verbs are roles. Vendors arrive later as adapters under `fetch` and `gen`, and
 adding one must never require touching this file's structure.
 """
 
 import argparse
+import getpass
 import io
 import json
 import os
 import sys
 import textwrap
 
-from . import ledger, manifest, policy, render
+from . import ledger, manifest, policy, render, secrets
 
 WRAP = 78
 
@@ -153,6 +155,123 @@ def cmd_render(args, stream):
     return 0
 
 
+def _declared(args):
+    """The manifest's secrets block, or nothing when there is no manifest.
+
+    Storing a credential is useful before a project exists, so the secret verb
+    does not insist on a manifest the way the ledger verb does. A manifest that
+    exists and is malformed still raises.
+    """
+    path = args.manifest or os.path.join(args.repo, manifest.DEFAULT_MANIFEST)
+    if not os.path.isfile(path):
+        return {}
+    return manifest.secrets(manifest.load(path))
+
+
+def cmd_secret_set(args, stream):
+    if sys.stdin is not None and not sys.stdin.isatty():
+        value = sys.stdin.read().strip()
+    else:
+        # Never an argument. argv reaches the shell history and the process
+        # list, and both outlive the command.
+        value = getpass.getpass("value for %s: " % args.name)
+    name = secrets.store_secret(args.name, value)
+    report = secrets.backend_report()
+    _out(stream, "stored %s in %s" % (name, report["backend"]))
+    if not report["recommended"]:
+        _out(stream, "warning: %s" % report["note"])
+    # status rather than lookup: a name whose manifest entry declares a
+    # reference klin cannot resolve yet must not turn a successful store into a
+    # failure.
+    state = secrets.status(name, _declared(args).get(name))
+    if state["source"] not in ("store", "unset", "error"):
+        _out(
+            stream,
+            "note: %s resolves from %s, which takes precedence over the store"
+            % (name, state["source"]),
+        )
+    return 0
+
+
+def cmd_secret_get(args, stream):
+    name = secrets.normalise(args.name)
+    if getattr(stream, "isatty", lambda: False)() and not args.reveal:
+        _out(
+            stream,
+            "klin: refusing to print %s to a terminal; pipe it, or pass --reveal"
+            % name,
+        )
+        return 2
+    _out(stream, secrets.resolve(name, _declared(args).get(name)))
+    return 0
+
+
+def cmd_secret_list(args, stream):
+    declared = _declared(args)
+    names = sorted(set(declared) | set(_stored_names_or_empty()))
+    if not names:
+        _out(stream, "no secrets declared in the manifest and none stored")
+        return 0
+    for name in names:
+        state = secrets.status(name, declared.get(name))
+        where = state["detail"] or ("declared" if name in declared else "stored")
+        _out(stream, "%-24s %-22s %s" % (state["name"], state["source"], where))
+    _out(stream, "")
+    _out(stream, "%d secret(s); values are never printed by list" % len(names))
+    return 0
+
+
+def _stored_names_or_empty():
+    """The store's own index, or nothing when the store cannot be reached.
+
+    Listing is a diagnostic. It should still show what the manifest declares on
+    a machine with no vault at all.
+    """
+    try:
+        return secrets.stored_names()
+    except secrets.SecretError:
+        return []
+
+
+def cmd_secret_rm(args, stream):
+    name = secrets.normalise(args.name)
+    existed = secrets.delete_secret(name)
+    _out(stream, "removed %s" % name if existed else "%s was not in the store" % name)
+    state = secrets.status(name, _declared(args).get(name))
+    if state["source"] not in ("unset", "error"):
+        _out(
+            stream,
+            "note: %s still resolves from %s, which klin cannot unset"
+            % (name, state["source"]),
+        )
+    return 0
+
+
+def cmd_secret_doctor(args, stream):
+    report = secrets.backend_report()
+    _out(stream, "backend: %s" % report["backend"])
+    if report["note"]:
+        for line in textwrap.wrap(report["note"], WRAP - 9):
+            _out(stream, "         %s" % line)
+    _out(stream, "override: %s, or KLIN_SECRET_BACKEND=env" % secrets.env_name("name"))
+    _out(stream)
+
+    declared = _declared(args)
+    if not declared:
+        _out(stream, "no secrets declared in the manifest")
+    unresolved = 0
+    for name in sorted(declared):
+        state = secrets.status(name, declared[name])
+        if state["source"] in ("unset", "error"):
+            unresolved += 1
+        note = declared[name].get("description") or state["detail"]
+        _out(stream, "%-24s %-22s %s" % (state["name"], state["source"], note))
+    if unresolved:
+        _out(stream, "")
+        _out(stream, "%d declared secret(s) unresolved; `klin secret set <name>`" % unresolved)
+    return 1 if unresolved or not report["recommended"] else 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="klin", description=__doc__.splitlines()[0])
     parser.add_argument("--repo", default=".", help="project root (default: cwd)")
@@ -187,6 +306,30 @@ def build_parser():
     )
     rendering.set_defaults(func=cmd_render)
 
+    sec = verbs.add_parser("secret", help="credentials an adapter needs")
+    kinds = sec.add_subparsers(dest="action")
+
+    setting = kinds.add_parser("set", help="store a value, read from stdin or a prompt")
+    setting.add_argument("name")
+    setting.set_defaults(func=cmd_secret_set)
+
+    getting = kinds.add_parser("get", help="print a value, for piping")
+    getting.add_argument("name")
+    getting.add_argument(
+        "--reveal", action="store_true", help="allow printing to a terminal"
+    )
+    getting.set_defaults(func=cmd_secret_get)
+
+    listing_secrets = kinds.add_parser("list", help="names and where they resolve from")
+    listing_secrets.set_defaults(func=cmd_secret_list)
+
+    removing = kinds.add_parser("rm", help="delete a value from the store")
+    removing.add_argument("name")
+    removing.set_defaults(func=cmd_secret_rm)
+
+    doctor = kinds.add_parser("doctor", help="what is holding the credentials")
+    doctor.set_defaults(func=cmd_secret_doctor)
+
     return parser
 
 
@@ -208,7 +351,12 @@ def main(argv=None, stream=None):
     args.repo = os.path.abspath(args.repo)
     try:
         return args.func(args, stream)
-    except (manifest.ManifestError, ledger.LedgerError, render.RenderError) as exc:
+    except (
+        manifest.ManifestError,
+        ledger.LedgerError,
+        render.RenderError,
+        secrets.SecretError,
+    ) as exc:
         _out(stream, "klin: %s" % exc)
         return 2
 

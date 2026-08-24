@@ -53,6 +53,36 @@ def rules(manifest):
     return got
 
 
+SECRET_KEYS = ("env", "ref", "description")
+
+
+def secrets(manifest):
+    """The secrets block: names and references, never values.
+
+    A manifest is committed into the consuming project's repository, so it may
+    say that an adapter needs a HuggingFace token and what the conventional
+    environment variable for it is called. It may never say what the token is.
+    Absence of the block is not an error; only adapters need one.
+    """
+    got = manifest.get("secrets") or {}
+    if not isinstance(got, dict):
+        raise ManifestError("manifest 'secrets' is not a mapping")
+    for name, spec in got.items():
+        if not isinstance(spec, dict):
+            raise ManifestError("secret %r is not a mapping: %r" % (name, spec))
+        for key, value in spec.items():
+            if key not in SECRET_KEYS:
+                raise ManifestError(
+                    "secret %r has unknown key %r; expected one of %s"
+                    % (name, key, ", ".join(SECRET_KEYS))
+                )
+            if not isinstance(value, str):
+                raise ManifestError(
+                    "secret %r: '%s' is not a string: %r" % (name, key, value)
+                )
+    return got
+
+
 def build_facts(manifest):
     facts = manifest.get("build_facts") or {}
     if not isinstance(facts, dict):

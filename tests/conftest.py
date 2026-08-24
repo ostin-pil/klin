@@ -22,7 +22,7 @@ stage: prototype
 
 build_facts:
   steam_drm: {steam_drm}
-
+{secrets}
 rules:
   - rule: 0
     id: recorded
@@ -70,6 +70,15 @@ rules:
     fields: [licence.text]
     text: A storefront is not a licence. "Free" on itch.io is a price.
 ```
+"""
+
+SECRETS = """
+secrets:
+  civitai:
+    env: CIVITAI_API_TOKEN
+    description: read access for the Civitai fetch adapter
+  huggingface:
+    env: HF_TOKEN
 """
 
 LICENSES = """# Asset provenance
@@ -143,13 +152,29 @@ class Repo(object):
         return self.path(".claude", "klin-manifest.md")
 
 
+@pytest.fixture(autouse=True)
+def never_a_real_vault(monkeypatch):
+    """Belt and braces.
+
+    Every test that reaches the credential store substitutes an in-memory one,
+    but a mistake in that substitution would otherwise write to the developer's
+    own keychain. The null backend makes such a mistake fail rather than
+    succeed quietly.
+    """
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+    monkeypatch.delenv("KLIN_SECRET_BACKEND", raising=False)
+
+
 @pytest.fixture
 def repo(tmp_path):
-    def build(steam_drm=False):
+    def build(steam_drm=False, secrets_block=False):
         os.makedirs(str(tmp_path / ".claude"), exist_ok=True)
         os.makedirs(str(tmp_path / "assets"), exist_ok=True)
         io.open(str(tmp_path / ".claude" / "klin-manifest.md"), "w", encoding="utf-8").write(
-            MANIFEST.format(steam_drm=str(bool(steam_drm)).lower())
+            MANIFEST.format(
+                steam_drm=str(bool(steam_drm)).lower(),
+                secrets=SECRETS if secrets_block else "",
+            )
         )
         io.open(str(tmp_path / "assets" / "LICENSES.md"), "w", encoding="utf-8").write(
             LICENSES

@@ -101,6 +101,41 @@ derived from the identifier, and an explicit `licence.families` list on a record
 overrides that derivation, which is the escape hatch for anything an identifier
 cannot express.
 
+## Secrets
+
+Adapters need credentials. The manifest names them and never holds them.
+
+```yaml
+secrets:
+  civitai:
+    env: CIVITAI_API_TOKEN
+    description: read access for the Civitai fetch adapter
+  huggingface:
+    env: HF_TOKEN
+```
+
+```
+klin secret set civitai        # prompts, or reads stdin when piped
+klin secret list               # names and where each resolves from
+klin secret doctor             # what is holding them, and what is missing
+klin secret rm civitai
+```
+
+Values go to the operating system's credential store: Credential Manager on
+Windows, Keychain on macOS, Secret Service on Linux. A lookup checks
+`KLIN_SECRET_<NAME>` first, then whichever conventional variable the manifest
+names, then the store. That order is why CI supplies credentials through the
+environment and never reaches for a vault, and why an SSH session still works
+on Windows, where Credential Manager is unreachable.
+
+The store protects a credential from another user on the machine, from a disk
+read outside the logon session, and from reaching a commit. It does not protect
+it from code running as your own account, because on Windows nothing local
+does. Keep tokens read-only and rotate them. Treat the store as a cache as
+well: it does not survive a profile rebuild, so the durable copy belongs in a
+password database. `research/2026-08-24_secrets-on-windows.md` has the
+reasoning and the alternatives that were weighed.
+
 ## Layout
 
 ```
@@ -109,7 +144,8 @@ klin/                    the Python package
   policy.py              licence families and rule evaluation
   render.py              the marked block inside a prose document
   manifest.py            the per-project manifest
-  cli.py                 fetch | gen | conform | ledger
+  secrets.py             credential lookup, references only in the manifest
+  cli.py                 fetch | gen | conform | ledger | secret
 plugin/                  the Claude Code plugin: skill and command
 tests/
 .claude-plugin/          the marketplace, so a second plugin is a directory
