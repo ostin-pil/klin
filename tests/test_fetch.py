@@ -474,9 +474,17 @@ def test_an_edge_block_is_not_reported_as_an_auth_failure(monkeypatch, tmp_path)
     assert "User-Agent" in message
 
 
-def test_every_request_carries_a_real_user_agent():
-    assert "Mozilla" in net.USER_AGENT
+def test_the_user_agent_is_honest_and_not_urllib():
+    """Named, not disguised.
+
+    The edge block is on `Python-urllib` specifically, not on non-browser
+    clients: an agent naming klin is served exactly as a spoofed browser string
+    is. So the only thing a browser string would buy is misrepresenting the
+    client to a vendor whose terms klin exists to respect.
+    """
+    assert net.USER_AGENT.startswith("klin/")
     assert "urllib" not in net.USER_AGENT.lower()
+    assert "Mozilla" not in net.USER_AGENT
 
 
 # --------------------------------------------------------------------------

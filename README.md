@@ -136,8 +136,10 @@ Downloads land on a `.part` file and are renamed only once every guard passes,
 so an interrupted fetch is never mistaken for a finished one. `--resume`
 continues one over HTTP Range.
 
-Every request carries a browser User-Agent. Without one, Civitai's edge answers
-`403 error code: 1010`, which reads like a rejected credential and is not.
+Every request carries a User-Agent naming klin. Without one, Civitai's edge
+answers `403 error code: 1010`, which reads like a rejected credential and is
+not. The block is on `Python-urllib` specifically rather than on non-browser
+clients, so klin says what it is instead of claiming to be Chrome.
 
 ## Three decisions worth knowing about
 

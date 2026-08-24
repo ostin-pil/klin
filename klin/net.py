@@ -35,15 +35,17 @@ from urllib.request import Request, urlopen
 
 from . import secrets
 
-#: Cloudflare blocks urllib's default agent outright: Civitai answers
-#: `403 error code: 1010`, which is the edge refusing the client and not the
-#: vendor refusing the credential. The distinction is invisible in the status
-#: code, so a real agent goes on every request rather than being discovered
-#: once per vendor.
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
+#: Civitai's edge answers urllib's default agent with `403 error code: 1010`,
+#: which is the edge refusing the client and not the vendor refusing the
+#: credential. The distinction is invisible in the status code, so an agent goes
+#: on every request rather than being rediscovered once per vendor.
+#:
+#: It says what klin is. Measured 2026-08-24 against the same URL: the block is
+#: on `Python-urllib` specifically rather than on non-browser clients, and this
+#: string is served a 206 exactly as a spoofed Chrome string is. Claiming to be
+#: a browser would therefore buy nothing and would misrepresent the client to a
+#: vendor whose terms klin exists to respect.
+USER_AGENT = "klin/0.1 (+https://github.com/ostin-pil/klin)"
 
 CHUNK = 1024 * 1024
 
