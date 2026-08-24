@@ -85,6 +85,37 @@ An explicit `--families` list wins outright, which is the escape hatch
 for `license:other` would be right about the repositories somebody checked and
 wrong invisibly about every later one.
 
+**Reading is not guessing, though.** `license: other` is the Hub saying "not on
+our list", which is a statement about its own vocabulary rather than about the
+licence, and a card that sets it almost always sets `license_name` and
+`license_link` beside it. klin reads all three, fetches the terms from the link,
+and prints the name and the link with its request for a decision, so the
+question is asked with the answer in view:
+
+```
+license_name: flux-1-dev-non-commercial-license
+license_link: https://huggingface.co/black-forest-labs/FLUX.1-dev/.../LICENSE.md
+licence text: 18491 characters from ...
+licence: other -> unknown (unknown)
+```
+
+The link matters more than it looks. It points at whichever repository owns the
+terms, which for both FLUX derivatives is `black-forest-labs/FLUX.1-dev` rather
+than the one being downloaded, so the fetched repository's own `LICENSE` file
+would have been the wrong document or no document at all.
+
+The classification still stays `unknown` until a human says otherwise. A licence
+named non-commercial is very probably noncommercial, and deriving a family from
+a string that happens to contain a word is still the invention this refuses.
+
+One link shape is different in kind. A `bespoke-lora-trained-license` links to
+`multimodal.art/civitai-licenses?allowCommercialUse=Image&...`, whose query
+string is Civitai's permission flags verbatim. That is structured data rather
+than a name, so it resolves through the same table below and needs no human.
+A flag link carrying no flags is treated as malformed rather than as a grant of
+nothing, because reading an empty query as `noncommercial` would be a guess, and
+a confident one.
+
 Civitai publishes no identifier at all, only permission flags, so the mapping is
 a judgment and it is recorded as one. The derived families and the vendor's raw
 flags both go into the record, and the whole API response is kept in a
