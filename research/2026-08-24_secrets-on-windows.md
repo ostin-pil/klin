@@ -144,6 +144,13 @@ Where it falls short.
   offers no format flag. For a database whose entire defence is its KDF,
   because a copy is deliberately synced offsite, that is the difference that
   matters.
+- An empty passphrase is accepted. `db-create -p` prompts, and pressing enter
+  through it produces a database with no password key at all, warned about once
+  and easy to click past. Nothing downstream notices: the outer header records
+  the KDF but not which key components exist, so an unprotected database
+  reports exactly the same strong Argon2 parameters as a good one. Windows
+  Hello quick unlock then fails for a reason that looks unrelated, because it
+  works by encrypting credentials that do not exist.
 - The user has to install and maintain KeePassXC.
 - Every invocation wants the database credential, which moves the bootstrap
   problem up one level rather than solving it.
@@ -157,7 +164,11 @@ What mitigates it.
 - Check the format rather than assuming it. The signature, version and KDF
   parameters sit in the unencrypted outer header by design, so a database can be
   identified before anything is unlocked, and a KDBX 3.1 file can be upgraded to
-  KDBX 4 with Argon2id from the GUI without rebuilding it.
+  KDBX 4 with Argon2 from the GUI without rebuilding it.
+- Check that the passphrase exists too, separately, because the header cannot
+  tell you. Opening the database with the password key deactivated has to fail;
+  if it succeeds, the file is readable by anyone holding it. Both checks belong
+  in whatever runs before the first offsite copy.
 - Put the database credential in Windows Credential Manager and let the tool
   unlock the KDBX with it. You keep a portable, inspectable, syncable database,
   and exactly one bootstrap secret sits in the OS vault.
