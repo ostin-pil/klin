@@ -48,6 +48,12 @@ def resolve(manifest, key, repo, default=None):
 #: path.
 CACHE_ENV = "KLIN_CACHE"
 
+#: What an unexpanded variable looks like in either platform's syntax. Checked
+#: in both forms regardless of host, because `os.path.expandvars` only knows the
+#: local one: a Windows `%VAR%` passes straight through a Linux CI runner
+#: untouched, and would otherwise be taken for a directory name.
+UNEXPANDED = re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+
 
 def cache_dir(manifest, default=None):
     """Resolve `cache_dir` to an absolute path outside the repo.
@@ -65,7 +71,7 @@ def cache_dir(manifest, default=None):
     if value is None:
         raise ManifestError("manifest has no 'cache_dir', and %s is unset" % CACHE_ENV)
     expanded = os.path.expanduser(os.path.expandvars(str(value)))
-    if "%" in expanded or expanded.startswith("$"):
+    if UNEXPANDED.search(expanded):
         raise ManifestError(
             "cache_dir is %r after expansion, so a variable in it is not set on "
             "this machine. Set it, or set %s." % (expanded, CACHE_ENV)

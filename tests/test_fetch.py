@@ -219,34 +219,62 @@ def test_explicit_families_win_in_policy_too():
 # cache_dir: the defect that `resolve()` would have caused.
 # --------------------------------------------------------------------------
 
+#: `os.path.expandvars` only understands the host's own syntax, so a test that
+#: hard-codes `%VAR%` passes on Windows and fails on a Linux runner for a reason
+#: that has nothing to do with the behaviour under test. The behaviour is the
+#: same on both; only the spelling differs.
+WINDOWS = os.name == "nt"
+
+
+def a_var(name):
+    return "%%%s%%" % name if WINDOWS else "$%s" % name
+
+
+def an_abs(tail):
+    return ("D:\\%s" % tail) if WINDOWS else ("/mnt/%s" % tail)
+
+
 def test_cache_dir_expands_variables(monkeypatch):
-    monkeypatch.setenv("SOME_ROOT", r"D:\models")
+    monkeypatch.setenv("SOME_ROOT", an_abs("models"))
     monkeypatch.delenv(manifest.CACHE_ENV, raising=False)
-    got = manifest.cache_dir({"cache_dir": "%SOME_ROOT%/klin/cache"})
-    assert got == os.path.normpath(r"D:\models/klin/cache")
+    got = manifest.cache_dir({"cache_dir": a_var("SOME_ROOT") + "/klin/cache"})
+    assert got == os.path.normpath(an_abs("models") + "/klin/cache")
 
 
 def test_cache_dir_is_never_joined_to_the_repo(monkeypatch):
     """The whole reason this is not `manifest.resolve`."""
-    monkeypatch.setenv("SOME_ROOT", r"D:\models")
+    monkeypatch.setenv("SOME_ROOT", an_abs("models"))
     monkeypatch.delenv(manifest.CACHE_ENV, raising=False)
-    got = manifest.cache_dir({"cache_dir": "%SOME_ROOT%/cache"})
+    got = manifest.cache_dir({"cache_dir": a_var("SOME_ROOT") + "/cache"})
     assert "Barinn" not in got
     assert not got.startswith(os.getcwd())
 
 
 def test_klin_cache_beats_the_manifest(monkeypatch):
-    monkeypatch.setenv(manifest.CACHE_ENV, r"D:\override")
-    got = manifest.cache_dir({"cache_dir": "%LOCALAPPDATA%/klin/cache"})
-    assert got == os.path.normpath(r"D:\override")
+    monkeypatch.setenv(manifest.CACHE_ENV, an_abs("override"))
+    got = manifest.cache_dir({"cache_dir": a_var("LOCALAPPDATA") + "/klin/cache"})
+    assert got == os.path.normpath(an_abs("override"))
 
 
 def test_unexpanded_variable_is_an_error(monkeypatch):
     monkeypatch.delenv(manifest.CACHE_ENV, raising=False)
     monkeypatch.delenv("DEFINITELY_NOT_SET", raising=False)
     with pytest.raises(manifest.ManifestError) as exc:
-        manifest.cache_dir({"cache_dir": "%DEFINITELY_NOT_SET%/cache"})
+        manifest.cache_dir({"cache_dir": a_var("DEFINITELY_NOT_SET") + "/cache"})
     assert "not set on this machine" in str(exc.value)
+
+
+@pytest.mark.parametrize("spelling", ["%NOT_SET_ANYWHERE%", "$NOT_SET_ANYWHERE"])
+def test_a_foreign_variable_syntax_is_still_caught(spelling, monkeypatch):
+    """A Windows manifest read on a Linux runner, and the reverse.
+
+    `expandvars` leaves the other platform's syntax untouched, so without an
+    explicit check `%LOCALAPPDATA%` becomes a directory of that literal name.
+    """
+    monkeypatch.delenv(manifest.CACHE_ENV, raising=False)
+    monkeypatch.delenv("NOT_SET_ANYWHERE", raising=False)
+    with pytest.raises(manifest.ManifestError):
+        manifest.cache_dir({"cache_dir": spelling + "/cache"})
 
 
 def test_relative_cache_dir_is_an_error(monkeypatch):
