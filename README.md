@@ -131,9 +131,20 @@ on Windows, where Credential Manager is unreachable.
 The store protects a credential from another user on the machine, from a disk
 read outside the logon session, and from reaching a commit. It does not protect
 it from code running as your own account, because on Windows nothing local
-does. Keep tokens read-only and rotate them. Treat the store as a cache as
-well: it does not survive a profile rebuild, so the durable copy belongs in a
-password database. `research/2026-08-24_secrets-on-windows.md` has the
+does. Keep tokens read-only and rotate them.
+
+Treat the store as a cache as well. It does not survive a profile rebuild, so
+the durable copy belongs in a password database, and the store is seeded from
+that database by hand:
+
+```
+keepassxc-cli show -q -s -a Password ~/vault.kdbx klin/civitai | klin secret set civitai
+```
+
+One database per person rather than per project, with a `klin/` group for the
+credentials klin reads. Seeding stays manual on purpose: automating it would
+mean klin holding the database credential, which trades away the property the
+database is there for. `research/2026-08-24_secrets-on-windows.md` has the
 reasoning and the alternatives that were weighed.
 
 ## Layout
