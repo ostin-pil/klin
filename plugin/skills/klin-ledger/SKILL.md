@@ -37,12 +37,18 @@ classifies without downloading, which on a seventeen-gigabyte checkpoint is the
 difference between a second and an hour.
 
 **When klin says a licence is `unknown`, it means it.** That is not a failure to
-look it up; it is klin refusing to guess. Read the vendor's terms yourself,
-decide, and pass the decision back:
+look it up; it is klin refusing to guess. It will already have printed
+`license_name`, `license_link` and the licence text where the vendor published
+them, so read those, decide, and pass the decision back:
 
 ```
 klin fetch hf <repo-id> --file <filename> --families noncommercial
 ```
+
+A name like `flux-1-dev-non-commercial-license` is the vendor's own answer and
+you should act on it. klin declines to read a family out of a substring, which
+is a rule about what a tool may infer, not a suggestion that the question is
+open.
 
 Do not skip this and let the record stand unclassified. `unknown` fails the
 stage rule, which is the point, and an asset classified by guess would pass a

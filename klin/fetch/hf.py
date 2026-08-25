@@ -5,17 +5,34 @@ identifier `policy.families` already understands. Those map straight through:
 the adapter writes the identifier onto the record and lets the policy module
 classify it, rather than deciding anything itself.
 
-`license:other` is the case that matters. It is not a licence, it is the
-absence of one that the tag vocabulary can express, and it covers Flux.1-dev
-and the Shakker ControlNet — the two largest things this project fetches. For
-those the adapter records the identifier verbatim, leaves the families unset so
-`policy.families` reports `unknown`, downloads the licence text where the
-repository ships one, and tells the operator to classify it by hand. Guessing
-here would put `noncommercial` on some records and miss it on others, and the
-misses are invisible.
+`license:other` is the case that matters, and it is not the end of the story.
+A card setting `license: other` almost always sets `license_name` and
+`license_link` beside it, and those carry the answer the tag withheld.
+Flux.1-dev declares `flux-1-dev-non-commercial-license` and links the terms; the
+Shakker ControlNet declares the same. Reading the tag and stopping meant klin
+asked for a hand classification while the vendor's own answer sat two fields
+below, which is worse than not asking at all, because it teaches the reader that
+the question is unanswerable.
+
+So all three fields are read now. What is still refused is the guess: a licence
+*named* non-commercial is not thereby classified, because deriving a family from
+a string that happens to contain a word is exactly the invention this module
+exists to prevent. The name and the link go into the record, the terms are
+fetched where the link is a document, and the operator is asked with the answer
+in front of them rather than in the abstract.
+
+One link shape is different in kind. A `bespoke-lora-trained-license` on the Hub
+links to `multimodal.art/civitai-licenses?...`, whose query string is Civitai's
+own permission flags, verbatim and machine-readable. That is not a name being
+pattern-matched, it is the same structured data `civitai.py` already maps, so it
+resolves through the same table and needs no human at all.
 """
 
 import os
+import re
+
+from urllib.parse import parse_qsl, urlsplit
+from urllib.request import Request, urlopen
 
 from .. import net
 from . import (
@@ -27,6 +44,7 @@ from . import (
     target_path,
     write_sidecar,
 )
+from .civitai import derive_families
 
 NAME = "hf"
 HELP = "a model repository on huggingface.co"
@@ -34,10 +52,17 @@ HELP = "a model repository on huggingface.co"
 API = "https://huggingface.co/api/models/%s"
 RESOLVE = "https://huggingface.co/%s/resolve/%s/%s"
 
-#: Filenames a repository uses for its own licence text. Fetched only when the
-#: identifier is one klin cannot classify, which is exactly when the terms
-#: themselves are the thing that matters.
+#: Filenames a repository uses for its own licence text, used when the licence
+#: link is not itself a document.
 LICENCE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md")
+
+#: A licence link whose query string is Civitai's permission flags rather than
+#: prose. Structured data, so it maps rather than needing a human.
+CIVITAI_LICENCE_LINK = re.compile(r"civitai-licenses", re.I)
+
+#: `license: other` is the Hub saying "not on our list", which is a statement
+#: about the vocabulary and not about the licence.
+UNINFORMATIVE = ("other", "unknown", "", None)
 
 
 def configure(parser):
@@ -46,16 +71,67 @@ def configure(parser):
     parser.add_argument("--revision", default="main", help="branch, tag or commit")
 
 
-def _licence_id(payload):
-    """The `license:` tag, or the card's own field, or nothing."""
+def licence_fields(payload):
+    """The identifier, and the name and link that `license: other` hides behind.
+
+    Returns `(id, name, link)`. A card carrying a real SPDX identifier sets
+    neither of the latter two and a card carrying `other` almost always sets
+    both, so this is one lookup rather than two code paths.
+    """
+    ident = None
     for tag in payload.get("tags") or []:
         if isinstance(tag, str) and tag.startswith("license:"):
-            return tag.split(":", 1)[1]
+            ident = tag.split(":", 1)[1]
+            break
+
     card = payload.get("cardData") or {}
-    value = card.get("license")
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value
+    if ident is None:
+        value = card.get("license")
+        if isinstance(value, list):
+            value = value[0] if value else None
+        ident = value
+
+    return ident, card.get("license_name"), card.get("license_link")
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    return None
+
+
+def flags_from_link(link):
+    """Civitai's permission flags, when a licence link encodes them.
+
+    The Hub's `bespoke-lora-trained-license` links to a page whose query string
+    carries `allowCommercialUse`, `allowDerivatives` and `allowNoCredit`. Those
+    are the fields the Civitai API publishes, so the same mapping applies and no
+    judgment is made here that is not already made and documented in
+    `civitai.py`.
+
+    Returns a payload shaped like a Civitai model, or None when the link is
+    ordinary prose.
+    """
+    if not link or not CIVITAI_LICENCE_LINK.search(link):
+        return None
+    pairs = parse_qsl(urlsplit(link).query, keep_blank_values=True)
+    if not pairs:
+        return None
+
+    commercial = []
+    payload = {}
+    for key, value in pairs:
+        if key == "allowCommercialUse":
+            commercial.extend(part for part in value.split(",") if part)
+        elif key in ("allowDerivatives", "allowNoCredit", "allowDifferentLicense"):
+            payload[key] = _as_bool(value)
+    payload["allowCommercialUse"] = commercial
+    return payload
 
 
 def _declared_size(payload, filename):
@@ -72,20 +148,39 @@ def _declared_size(payload, filename):
     return None
 
 
-def _licence_text(repo_id, revision, payload):
+def _fetch_text(url):
+    try:
+        request = Request(url, headers={"User-Agent": net.USER_AGENT})
+        with urlopen(request, timeout=60) as response:
+            if "text/html" in (response.headers.get("Content-Type") or ""):
+                # A licence *page* is not licence text. Recording markup would
+                # satisfy rule 5 with something nobody can read.
+                return None
+            return response.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def licence_text(repo_id, revision, payload, link):
+    """The terms themselves, from the link if it is a document, else the repo.
+
+    `license_link` usually points at a LICENSE file in whichever repository
+    actually owns the terms, which for both FLUX derivatives is
+    `black-forest-labs/FLUX.1-dev` rather than the repository being fetched. The
+    fetched repository's own LICENSE is the fallback, not the first choice.
+    """
+    if link:
+        # `blob` is the HTML view of a file; `resolve` is the file.
+        raw = link.replace("/blob/", "/resolve/")
+        text = _fetch_text(raw)
+        if text:
+            return raw, text
+
     names = {s.get("rfilename") for s in payload.get("siblings") or []}
     for candidate in LICENCE_FILES:
-        if candidate not in names:
-            continue
-        url = RESOLVE % (repo_id, revision, candidate)
-        try:
-            from urllib.request import Request, urlopen
-
-            request = Request(url, headers={"User-Agent": net.USER_AGENT})
-            with urlopen(request, timeout=60) as response:
-                return candidate, response.read().decode("utf-8", "replace")
-        except Exception:
-            return candidate, None
+        if candidate in names:
+            url = RESOLVE % (repo_id, revision, candidate)
+            return url, _fetch_text(url)
     return None, None
 
 
@@ -104,30 +199,49 @@ def run(args, ctx):
             "you; store one with `klin secret set huggingface`." % (repo_id, gated)
         )
 
-    ident = _licence_id(payload)
+    ident, name, link = licence_fields(payload)
+    uninformative = ident in UNINFORMATIVE
+
     record = record_for(NAME, repo_id.replace("/", "--"), filename)
     record["author"]["name"] = payload.get("author") or repo_id.split("/")[0]
     record["author"]["url"] = "https://huggingface.co/%s" % repo_id.split("/")[0]
     record["source"]["url"] = "https://huggingface.co/%s" % repo_id
     record["source"]["upstream_version"] = payload.get("sha")
     record["licence"]["id"] = ident
-    record["licence"]["name"] = ident
-    record["licence"]["url"] = "https://huggingface.co/%s/blob/%s/README.md" % (
-        repo_id,
-        args.revision,
+    record["licence"]["name"] = name or ident
+    record["licence"]["url"] = link or (
+        "https://huggingface.co/%s/blob/%s/README.md" % (repo_id, args.revision)
     )
 
-    how, found = classify(ctx, record)
+    derived = None
+    flags = flags_from_link(link) if uninformative else None
+    if flags is not None:
+        derived, why = derive_families(flags)
+        record["notes"] = (
+            "families resolved from the permission flags in license_link: %s"
+            % "; ".join(why)
+            if why
+            else "the permission flags in license_link grant commercial use"
+        )
+        ctx.say("license_link carries Civitai permission flags: %s" % flags)
 
-    # The terms are worth having on disk exactly when the identifier failed to
-    # say anything, which is also when rule 5 ("a storefront is not a licence")
-    # has real work to do.
+    how, found = classify(ctx, record, derived=derived)
+
+    if uninformative and derived is None:
+        # The tag said nothing, so say what the card said instead. Asking for a
+        # hand classification without this is asking a question whose answer is
+        # already on the page.
+        if name:
+            ctx.say("license_name: %s" % name)
+        if link:
+            ctx.say("license_link: %s" % link)
+
     if how == "unknown":
-        name, text = _licence_text(repo_id, args.revision, payload)
+        where, text = licence_text(repo_id, args.revision, payload, link)
         if text:
             record["licence"]["text"] = text
-            record["licence"]["url"] = RESOLVE % (repo_id, args.revision, name)
-            ctx.say("licence text: %s, %d characters, recorded" % (name, len(text)))
+            record["licence"]["url"] = where
+            ctx.say("licence text: %d characters from %s" % (len(text), where))
 
     report_classification(ctx, record, how, found)
 

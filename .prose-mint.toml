@@ -7,6 +7,14 @@
 #
 # hard-wrap is intentionally not enabled: these docs wrap at ~80 columns by
 # choice. The gate targets the structural rhetoric tells.
+#
+# A PR body is scanned with the built-in ruleset instead, which *does* enable
+# hard-wrap, so a body wrapped the way these files are wrapped fails a gate
+# these files pass. That asymmetry is deliberate and it is not a bug in either
+# half: GitHub renders a single newline as a line break, so 80-column wrapping
+# that reads well here renders ragged there. Write PR bodies unwrapped and let
+# the renderer do it. Noted here because this is the file you open when the
+# prose gate goes red, and the reason lives in .github/workflows/prose.yml.
 
 [scope]
 include = [
