@@ -34,7 +34,7 @@ Homepage = "https://github.com/ostin-pil/klin"
 klin = "klin.cli:main"
 
 [tool.setuptools]
-packages = ["klin", "klin.fetch", "klin.index"]
+packages = ["klin"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
