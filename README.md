@@ -136,6 +136,40 @@ with it may be sold, so a model offering only those is treated as
 noncommercial. Records carry a `LicenseRef-` id, SPDX's own convention for terms
 that are not on its list.
 
+### Adopting a tree that predates klin
+
+Every model directory predates the tool that would have recorded it. Barinn's
+held sixty-nine gigabytes across five base models, none of them fetched through
+klin, so every image they produced was untraceable: the index could name the
+model behind a plate and then find no record to look up. Re-downloading all of
+it to learn what was already on the disk is not an answer, and hand-writing the
+records means inventing the licences.
+
+```
+klin fetch hf Comfy-Org/flux1-schnell --file flux1-schnell-fp8.safetensors \
+    --adopt D:/comfy-models/checkpoints/flux1-schnell-fp8.safetensors
+```
+
+Adoption is a fetch minus the transfer. The guards that make a downloaded file
+trustworthy are properties of the bytes and not of how they arrived: the size
+matches what the vendor publishes, the safetensors header parses, and the digest
+matches the vendor's own hash. Run against a local file they prove the same
+thing.
+
+So a mismatch is refused outright rather than noted, because a record is an
+assertion about provenance and writing one for a file that failed the vendor's
+own hash asserts what klin has just disproved:
+
+```
+klin: z_image_base_bf16.safetensors is 12309874112 bytes and the vendor
+publishes 12309866400. This is not that file, so klin will not record it as one.
+```
+
+Three of Barinn's five adopted with their hashes matching the Hub's. Two refused
+on exact byte counts, 7,712 and 40 bytes out, because no published file matches
+them. Both were locally converted, so there is no upstream to verify them
+against, and that is the answer rather than an obstacle.
+
 ### Where files land
 
 `cache_dir` in the manifest, overridden by `KLIN_CACHE`, which is where a
@@ -341,6 +375,34 @@ Seven of Barinn's Civitai LoRAs sat in that state with `allowCommercialUse:
 the mirror of inventing one, and with the gate above now stopping on `unknown`,
 the conflation would have become a false failure rather than a quiet one.
 
+### Narrowing a rule to what klin could not read
+
+`require` takes `unless_classified: true`, which skips records whose licence
+klin was able to classify. The case it exists for is a rule demanding
+`licence.text`, written because a storefront is not a licence and "Free" on
+itch.io is a price. That reasoning is about terms nobody can look up, and it
+does not reach `Apache-2.0`, where the identifier is the licence.
+
+```yaml
+  - rule: 5
+    kind: require
+    when: ship
+    fields: [licence.text]
+    unless_classified: true
+```
+
+It narrows in the safe direction, exempting exactly the records klin could read
+and never the ones it could not. An unclassified record is the one the rule was
+written about, and it still has to carry its terms.
+
+The other half of that fix is `spdx.py`. A recognised identifier has exactly one
+text in a published register, so recording what the register says `Apache-2.0`
+is amounts to a lookup rather than an inference, and an identifier outside the
+register fills nothing at all. It runs only where the repository itself
+publishes no licence document, which is the ordinary case for a model card
+carrying a clean tag: neither Comfy-Org repository ships a `LICENSE` file, and
+the terms were never in doubt, only somewhere else.
+
 ## Set-level rules
 
 Some rules are assertions over the whole set combined with a fact about the
@@ -420,6 +482,7 @@ reasoning and the alternatives that were weighed.
 klin/                    the Python package
   ledger.py              JSONL records, one line per asset
   policy.py              licence families and rule evaluation
+  spdx.py                the licence register, for an identifier's own text
   render.py              the marked block inside a prose document
   manifest.py            the per-project manifest
   secrets.py             credential lookup, references only in the manifest
