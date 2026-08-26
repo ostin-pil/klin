@@ -805,3 +805,109 @@ def test_a_file_with_a_sibling_part_is_not_reused(tmp_path, monkeypatch):
     serve(monkeypatch, FakeResponse(body, {"Content-Type": "application/octet-stream"}))
     facts = net.download("https://vendor.invalid/m", dest)
     assert facts["reused"] is False
+
+
+# --------------------------------------------------------------------------
+# Adoption: a fetch minus the transfer, for a tree that predates klin.
+# --------------------------------------------------------------------------
+
+import hashlib
+import struct
+
+
+def a_safetensors(path, body=b"\x00" * 64):
+    """A file with a header a real safetensors reader would accept."""
+    header = json.dumps({"__metadata__": {}}).encode("utf-8")
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent)
+    with open(path, "wb") as handle:
+        handle.write(struct.pack("<Q", len(header)) + header + body)
+    return path
+
+
+def sha_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 16), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def test_adoption_records_a_file_without_fetching_it(tmp_path):
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    facts = fetch.adopt(
+        ctx, path, expected_size=os.path.getsize(path), expected_sha256=sha_of(path)
+    )
+    assert facts["adopted"] is True
+    assert facts["sha256"] == sha_of(path)
+    assert any("matches the vendor's published hash" in line for line in ctx.lines)
+
+
+def test_a_size_mismatch_is_refused_not_noted(tmp_path):
+    """A record is an assertion about provenance. Writing one for a file that
+    failed the vendor's own size would assert what klin just disproved."""
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch.adopt(ctx, path, expected_size=os.path.getsize(path) + 1)
+    assert "is not that file" in str(exc.value)
+
+
+def test_a_hash_mismatch_is_refused(tmp_path):
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch.adopt(ctx, path, expected_sha256="0" * 64)
+    assert "would be false" in str(exc.value)
+
+
+def test_a_file_that_is_not_safetensors_is_refused(tmp_path):
+    path = str(tmp_path / "weights.safetensors")
+    with open(path, "wb") as handle:
+        handle.write(b"<!DOCTYPE html><html>not a model</html>")
+    with pytest.raises(net.NetError):
+        fetch.adopt(Ctx(Args(adopt=path)), path)
+
+
+def test_a_missing_file_is_refused(tmp_path):
+    path = str(tmp_path / "nothing.safetensors")
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch.adopt(Ctx(Args(adopt=path)), path)
+    assert "is not a file" in str(exc.value)
+
+
+def test_no_published_hash_says_so_rather_than_implying_a_check(tmp_path):
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    fetch.adopt(ctx, path, expected_size=os.path.getsize(path))
+    assert any("publishes no hash" in line for line in ctx.lines)
+
+
+def test_two_adopted_files_in_one_directory_keep_their_own_metadata(tmp_path):
+    """The cache gives every file its own directory and a weights tree does
+    not, so a plain meta.json would have the second adoption overwrite the
+    first's metadata with something that still looks right."""
+    one = a_safetensors(str(tmp_path / "models" / "a.safetensors"))
+    two = a_safetensors(str(tmp_path / "models" / "b.safetensors"))
+    fetch.write_sidecar_beside(one, {"which": "a"})
+    fetch.write_sidecar_beside(two, {"which": "b"})
+    assert json.load(open(one + ".meta.json"))["which"] == "a"
+    assert json.load(open(two + ".meta.json"))["which"] == "b"
+
+
+@pytest.mark.parametrize("key", ["sha256", "oid"])
+def test_the_hub_digest_is_read_under_either_spelling(key):
+    """The Hub says `sha256`; Git LFS's own pointer format says `oid`. A guard
+    that silently checked nothing because of a key name is the failure this
+    module already warns about for files_metadata=true."""
+    payload = {
+        "siblings": [{"rfilename": "w.safetensors", "lfs": {key: "a" * 64}}]
+    }
+    assert hf._declared_sha256(payload, "w.safetensors") == "a" * 64
+
+
+def test_a_truncated_digest_is_not_offered_as_one():
+    payload = {"siblings": [{"rfilename": "w.safetensors", "lfs": {"sha256": "abc"}}]}
+    assert hf._declared_sha256(payload, "w.safetensors") is None

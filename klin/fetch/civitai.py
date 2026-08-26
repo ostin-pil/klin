@@ -36,6 +36,7 @@ import os
 
 from .. import net
 from . import (
+    adopt,
     classify,
     finish,
     link_into_models,
@@ -43,6 +44,7 @@ from . import (
     report_classification,
     target_path,
     write_sidecar,
+    write_sidecar_beside,
 )
 
 NAME = "civitai"
@@ -218,6 +220,30 @@ def run(args, ctx):
         ctx.say("      to %s" % dest)
         ctx.say("  declared size: %s" % (size if size else "not published"))
         return 0
+
+    if args.adopt:
+        facts = adopt(
+            ctx,
+            args.adopt,
+            expected_size=size,
+            expected_sha256=((item.get("hashes") or {}).get("SHA256") or "") or None,
+        )
+        write_sidecar_beside(
+            facts["path"], {"model": payload, "version": version, "file": item}
+        )
+        record["source"]["mirror_of"] = url
+        record["notes"] = " ".join(
+            filter(
+                None,
+                [
+                    record.get("notes"),
+                    "adopted from disk: the file predates klin and was verified "
+                    "against the vendor's published size and hash rather than "
+                    "re-downloaded.",
+                ],
+            )
+        )
+        return finish(ctx, record, facts)
 
     write_sidecar(dest, {"model": payload, "version": version, "file": item})
     ctx.say("fetching version %s, %s" % (version.get("id"), item.get("name")))

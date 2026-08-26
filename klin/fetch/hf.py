@@ -36,6 +36,7 @@ from urllib.request import Request, urlopen
 
 from .. import net
 from . import (
+    adopt,
     classify,
     finish,
     link_into_models,
@@ -43,6 +44,7 @@ from . import (
     report_classification,
     target_path,
     write_sidecar,
+    write_sidecar_beside,
 )
 from .civitai import derive_families
 
@@ -132,6 +134,28 @@ def flags_from_link(link):
             payload[key] = _as_bool(value)
     payload["allowCommercialUse"] = commercial
     return payload
+
+
+def _declared_sha256(payload, filename):
+    """The digest the Hub publishes for an LFS file.
+
+    Every weight worth fetching is stored in LFS, and the pointer carries the
+    file's sha256. It is the strongest identity check available here and it
+    costs nothing extra, because `?blobs=true` already returns it beside the
+    size the size guard was reading anyway.
+
+    The Hub spells it `sha256`. `oid` is the spelling in Git LFS's own pointer
+    format and in some of the Hub's other responses, so both are read: a guard
+    that finds neither reports nothing rather than a false pass, but silently
+    checking nothing because of a key name is the failure this file already
+    warns about for `files_metadata=true`.
+    """
+    for sibling in payload.get("siblings") or []:
+        if sibling.get("rfilename") == filename:
+            lfs = sibling.get("lfs") or {}
+            got = lfs.get("sha256") or lfs.get("oid")
+            return str(got) if got and len(str(got)) == 64 else None
+    return None
 
 
 def _declared_size(payload, filename):
@@ -254,6 +278,28 @@ def run(args, ctx):
         ctx.say("      to %s" % dest)
         ctx.say("  declared size: %s" % (size if size else "not published"))
         return 0
+
+    if args.adopt:
+        facts = adopt(
+            ctx,
+            args.adopt,
+            expected_size=size,
+            expected_sha256=_declared_sha256(payload, filename),
+        )
+        write_sidecar_beside(facts["path"], payload)
+        record["source"]["mirror_of"] = url
+        record["notes"] = " ".join(
+            filter(
+                None,
+                [
+                    record.get("notes"),
+                    "adopted from disk: the file predates klin and was verified "
+                    "against the vendor's published size and hash rather than "
+                    "re-downloaded.",
+                ],
+            )
+        )
+        return finish(ctx, record, facts)
 
     write_sidecar(dest, payload)
     ctx.say("fetching %s" % url)
