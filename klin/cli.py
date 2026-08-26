@@ -6,6 +6,7 @@
     klin ledger render [--check]
     klin secret set <name> | get <name> | list | rm <name> | doctor
     klin fetch <vendor> ...
+    klin gen comfy --workflow <api.json> --prompt "..." [--check]
     klin index build [--rescan] [--prune] | status
     klin ls [--lora X] [--model X] [--seed N] [--since D] [--check]
     klin show <path fragment>
@@ -30,7 +31,7 @@ import re
 import sys
 import textwrap
 
-from . import fetch, index, ledger, manifest, net, policy, render, secrets
+from . import fetch, gen, index, ledger, manifest, net, policy, render, secrets
 
 WRAP = 78
 
@@ -694,6 +695,10 @@ def build_parser():
         verbs.add_parser("fetch", help="acquire an asset from a vendor")
     )
 
+    gen.configure(
+        verbs.add_parser("gen", help="produce an asset with a local generator")
+    )
+
     idx = verbs.add_parser("index", help="scan what is on this machine")
     scans = idx.add_subparsers(dest="action")
 
@@ -802,6 +807,7 @@ def main(argv=None, stream=None):
         secrets.SecretError,
         net.NetError,
         fetch.FetchError,
+        gen.GenError,
         index.IndexingError,
     ) as exc:
         _out(stream, "klin: %s" % exc)
