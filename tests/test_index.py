@@ -418,19 +418,26 @@ def test_a_noncommercial_model_fails_the_gate_it_produced(db, tmp_path):
     assert [f.rule_id for f in got["findings"]] == ["excluded-licences"]
 
 
-def test_a_derived_empty_family_list_travels_beside_the_classification(db, tmp_path):
-    """`policy.families` cannot tell "checked, nothing applies" from "unknown".
-
-    A Civitai adapter that reads permission flags and finds no restriction
-    writes `families: []`, and an empty list is falsy, so classification falls
-    through to a `LicenseRef-` identifier and reports `unknown`. The verdict
-    carries the raw declaration so a caller can say which of the two it is.
-    """
-    cache = weights(str(tmp_path / "cache" / "open.safetensors"))
-    tree = str(tmp_path / "models" / "loras" / "open.safetensors")
-    os.makedirs(os.path.dirname(tree))
+def linked_model(tmp_path, name="open.safetensors"):
+    """A weight in the tree that is the same file as one in the cache."""
+    cache = weights(str(tmp_path / "cache" / name))
+    tree = str(tmp_path / "models" / "loras" / name)
+    if not os.path.isdir(os.path.dirname(tree)):
+        os.makedirs(os.path.dirname(tree))
     os.link(cache, tree)
+    return cache
 
+
+def test_a_vendor_that_permits_everything_reads_as_permitting_everything(
+    db, tmp_path
+):
+    """An empty family list is a checked result, and renders as one.
+
+    Seven of Barinn's Civitai LoRAs carry `families: []` because their flags
+    say `allowCommercialUse: [Image, Sell]`. An empty column would read as
+    missing data, which is the opposite of what it means.
+    """
+    cache = linked_model(tmp_path)
     root = str(tmp_path / "out")
     write_generated(os.path.join(root, "fine.png"), base="open.safetensors")
     index.scan(db, root, "Fixture", [])
@@ -440,10 +447,32 @@ def test_a_derived_empty_family_list_travels_beside_the_classification(db, tmp_p
     permissive["licence"]["families"] = []
     models = index.model_map(str(tmp_path / "models"), [permissive])
     got = index.verdict(db, row["path"], models, [permissive], [], {})
-    entry = got["models"][0]
-    assert entry["families"] == ["unknown"]
-    assert entry["declared"] == []
-    assert cli._families(entry).startswith("no family applies")
+
+    assert got["models"][0]["families"] == []
+    assert cli._families(got["models"][0]) == "no family applies"
+    assert got["ship"] is True
+
+
+def test_an_unclassifiable_model_blocks_the_image_it_made(db, tmp_path):
+    """The gate hole, from the index's side.
+
+    Nothing in a project's rule table denies `unknown`, so before the coverage
+    finding existed an image made by a model klin could not classify passed
+    with the models it could.
+    """
+    cache = linked_model(tmp_path, "mystery.safetensors")
+    root = str(tmp_path / "out")
+    write_generated(os.path.join(root, "murky.png"), base="mystery.safetensors")
+    index.scan(db, root, "Fixture", [])
+    row = index.query(db)[0]
+
+    records = [record("murky-model", "LicenseRef-Nobody-Knows", paths=[cache])]
+    models = index.model_map(str(tmp_path / "models"), records)
+    got = index.verdict(db, row["path"], models, records, [], {})
+
+    assert got["unresolved"] == []  # it resolved to a record just fine
+    assert got["ship"] is False  # and still does not pass
+    assert [f.rule_id for f in got["findings"]] == ["unclassified"]
 
 
 # ------------------------------------------------------------------- cli

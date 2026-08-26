@@ -501,14 +501,6 @@ def verdict(conn, path, models, records, rules, facts, ship=True):
             )
             out["ship"] = False
             continue
-        # `declared` and `families` differ in a way worth carrying separately.
-        # An adapter that reads a vendor's permission flags and finds nothing
-        # restrictive writes `families: []`, which is a checked result. But
-        # `policy.families` tests that list for truthiness, so an empty one
-        # falls through to the identifier, and a `LicenseRef-` id classifies as
-        # `unknown`. Reporting "unknown" for a licence somebody did resolve is
-        # the one thing this tool must not do, so the raw declaration travels
-        # alongside the classification and the caller can tell them apart.
         out["models"].append(
             {
                 "name": name,
@@ -518,7 +510,6 @@ def verdict(conn, path, models, records, rules, facts, ship=True):
                 "how": entry["how"],
                 "licence": ledger.field(record, "licence.id"),
                 "families": sorted(policy.families(record)),
-                "declared": ledger.field(record, "licence.families"),
             }
         )
 

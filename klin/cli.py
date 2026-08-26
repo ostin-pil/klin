@@ -97,14 +97,50 @@ def _print_finding(stream, finding):
         finding.level, finding.level
     )
     where = finding.record_id or "(whole set)"
-    _out(
-        stream,
-        "%s rule %s (%s)  %s" % (label, finding.number, finding.rule_id, where),
-    )
+    # klin's own coverage finding carries no rule number, because it was not
+    # transcribed from the project's policy document and citing a number it
+    # never had would misattribute it.
+    cited = "rule %s (%s)" % (finding.number, finding.rule_id)
+    if finding.number is None:
+        cited = "klin (%s)" % finding.rule_id
+    _out(stream, "%s %s  %s" % (label, cited, where))
     _out(stream, "      %s" % finding.summary)
     if finding.text:
         for line in textwrap.wrap(finding.text, WRAP - 6):
             _out(stream, "      %s" % line)
+    _out(stream)
+
+
+def _report_drift(stream, data, records):
+    """Say when the resolved cache is not the one the ledger was written in.
+
+    A note rather than a failure. A project may legitimately keep assets
+    outside the cache, and this cannot tell that apart from a variable that has
+    gone missing. What it can do is stop the discrepancy being invisible, which
+    is the only reason the state persists.
+    """
+    try:
+        cache = manifest.cache_dir(data, default=None)
+    except manifest.ManifestError:
+        return
+    drift = ledger.cache_drift(records, cache)
+    if not drift:
+        return
+    _out(stream, "note: cache_dir resolves to %s," % drift["cache"])
+    _out(
+        stream,
+        "      and none of the %d recorded file(s) are under it. They are in:"
+        % drift["recorded"],
+    )
+    for where in drift["elsewhere"]:
+        _out(stream, "        %s" % where)
+    for line in textwrap.wrap(
+        "Set %s to the tree that is actually in use, or correct cache_dir. "
+        "Left alone, the next fetch downloads into the empty one and nothing "
+        "reports a problem." % manifest.CACHE_ENV,
+        WRAP - 6,
+    ):
+        _out(stream, "      %s" % line)
     _out(stream)
 
 
@@ -121,6 +157,8 @@ def cmd_audit(args, stream):
         % (gate, len(records), data.get("policy_doc", "(unset)")),
     )
     _out(stream)
+
+    _report_drift(stream, data, records)
 
     findings = policy.evaluate(records, rules, facts, ship=args.ship)
     for finding in findings:
@@ -281,18 +319,13 @@ def _short(name):
 
 
 def _families(entry):
-    """How to render a classification, without overstating what is known.
+    """How to render a classification, including the one that is empty.
 
-    A record whose adapter derived an empty family list has been checked: the
-    vendor's flags carried no restriction klin tracks. `policy.families` cannot
-    say so, because it tests that list for truthiness and an empty one falls
-    through to the identifier, which for a `LicenseRef-` id yields `unknown`.
-    Printing `unknown` there would report a resolved licence as unresolved, so
-    the declaration wins the display where the two disagree.
+    An empty set is a real answer: the licence was read and nothing klin tracks
+    restricts it. Rendering that as a blank column would read as missing data,
+    which is the opposite of what it means.
     """
-    if entry.get("declared") == [] and entry.get("licence"):
-        return "no family applies, per the vendor's own flags"
-    return ", ".join(entry["families"])
+    return ", ".join(entry["families"]) or "no family applies"
 
 
 def _stack(conn, path):
