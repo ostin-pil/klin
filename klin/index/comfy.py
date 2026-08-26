@@ -98,14 +98,14 @@ def graph_of(path):
     return graph
 
 
-def _link(value):
+def link(value):
     """A wired input is `[node_id, slot]`; a literal is anything else."""
     if isinstance(value, list) and len(value) == 2 and isinstance(value[0], (str, int)):
         return str(value[0])
     return None
 
 
-def _node(graph, node_id):
+def node_of(graph, node_id):
     node = graph.get(str(node_id))
     if not isinstance(node, dict):
         return {}, ""
@@ -124,7 +124,7 @@ def _walk_model(graph, node_id, notes):
     base = None
     while node_id is not None and node_id not in seen:
         seen.add(node_id)
-        inputs, kind = _node(graph, node_id)
+        inputs, kind = node_of(graph, node_id)
         if kind in MODEL_LOADERS:
             key, role = MODEL_LOADERS[kind]
             base = {"name": inputs.get(key), "role": role, "loader": kind}
@@ -138,7 +138,7 @@ def _walk_model(graph, node_id, notes):
                     "loader": kind,
                 }
             )
-        node_id = _link(inputs.get("model"))
+        node_id = link(inputs.get("model"))
     loras.reverse()
     if base is None:
         notes.append("model chain ended without a recognised loader")
@@ -149,7 +149,7 @@ def _text_from(graph, node_id):
     """Resolve a conditioning input back to the prompt a person typed."""
     hops = 0
     while node_id is not None and hops < MAX_HOPS:
-        inputs, kind = _node(graph, node_id)
+        inputs, kind = node_of(graph, node_id)
         if kind in TEXT_ENCODERS:
             text = inputs.get("text")
             if text is None:
@@ -157,7 +157,7 @@ def _text_from(graph, node_id):
             return text if isinstance(text, str) else None
         nxt = None
         for key in ("conditioning", "conditioning_to", "positive", "negative"):
-            nxt = _link(inputs.get(key))
+            nxt = link(inputs.get(key))
             if nxt:
                 break
         node_id = nxt
@@ -178,10 +178,10 @@ def _latent_size(graph, node_id):
     seen = set()
     while node_id is not None and node_id not in seen:
         seen.add(node_id)
-        inputs, kind = _node(graph, node_id)
+        inputs, kind = node_of(graph, node_id)
         if kind in LATENTS:
             return [inputs.get("width"), inputs.get("height")]
-        node_id = _link(inputs.get("samples")) or _link(inputs.get("latent_image"))
+        node_id = link(inputs.get("samples")) or link(inputs.get("latent_image"))
     return None
 
 
@@ -240,8 +240,8 @@ def read(path):
         )
 
     sampler_id = sorted(found, key=lambda n: (len(str(n)), str(n)))[0]
-    inputs, _kind = _node(graph, sampler_id)
-    base, loras = _walk_model(graph, _link(inputs.get("model")), notes)
+    inputs, _kind = node_of(graph, sampler_id)
+    base, loras = _walk_model(graph, link(inputs.get("model")), notes)
     seed = inputs.get("seed")
     if seed is None:
         seed = inputs.get("noise_seed")
@@ -256,9 +256,9 @@ def read(path):
         "sampler": inputs.get("sampler_name"),
         "scheduler": inputs.get("scheduler"),
         "denoise": inputs.get("denoise"),
-        "prompt": _text_from(graph, _link(inputs.get("positive"))),
-        "negative": _text_from(graph, _link(inputs.get("negative"))),
-        "latent_size": _latent_size(graph, _link(inputs.get("latent_image"))),
+        "prompt": _text_from(graph, link(inputs.get("positive"))),
+        "negative": _text_from(graph, link(inputs.get("negative"))),
+        "latent_size": _latent_size(graph, link(inputs.get("latent_image"))),
         "workflow_sha256": workflow_sha256(graph),
         "graph": graph,
         "notes": notes,

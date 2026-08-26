@@ -16,8 +16,9 @@ klin applies it and quotes it back.
 v0.1. The ledger, the policy engine and the renderer came first, because the
 shared core is the reason this is one repo rather than several, so it exists
 before anything depends on it. On top of it sit two vendor adapters under
-`fetch`, and the index, which scans what a machine already holds and traces
-each file back to the models that made it. No `gen` adapter yet.
+`fetch`, the index, which scans what a machine already holds and traces each
+file back to the models that made it, and `gen`, which checks a workflow's
+licence posture before the GPU starts. No `conform` verb yet.
 
 ## Install
 
@@ -258,6 +259,69 @@ Every request carries a User-Agent naming klin. Without one, Civitai's edge
 answers `403 error code: 1010`, which reads like a rejected credential and is
 not. The block is on `Python-urllib` specifically rather than on non-browser
 clients, so klin says what it is instead of claiming to be Chrome.
+
+## Gen
+
+```
+klin gen comfy --workflow flux_schnell_style_t2i.json     --prompt-file scene.txt --seed 101 --size 640x368     --lora ps1_style_flux_v1.safetensors@0.7 --check
+```
+
+Driving a sampler is not what klin is for, and a shell script does it in eighty
+lines. What a script cannot do is answer the question that matters before the
+work happens rather than months after it.
+
+**The licence posture of a graph is knowable before it runs.** A workflow names
+its checkpoint and its LoRA stack, the index resolves those names to ledger
+records by filesystem identity, and the policy engine applies the project's
+rules to records. So the whole chain already exists:
+
+```
+workflow design/mockups/workflows/flux_dev_style_t2i.json
+  checkpoint flux1-dev-fp8.safetensors    LicenseRef-FLUX-1-dev-Non-Commercial [noncommercial]
+
+output could ship: NO
+  excluded-licences: licence LicenseRef-FLUX-1-dev-Non-Commercial is noncommercial
+```
+
+`--check` refuses to queue on that, and exits non-zero. Without it klin says so
+and generates anyway, because a prototype plate from a non-commercial model is a
+legitimate thing to want. This inverts how it normally goes: the alternative is
+what this project did, which was generate 1,384 plates over several weeks and
+then discover that 66 came from FLUX.1-dev. The models were the same either way.
+Only the moment of finding out changed.
+
+Outputs go into the index as they land, so a generation cannot accumulate into
+an unattributed pile.
+
+**Raw output does not enter the ledger.** A record per generated image would put
+thousands of rows describing throwaway plates into a file meant to describe
+shipped assets. A record appears when an image becomes an asset, which is a
+different verb.
+
+### Roles are located by traversal, not by node title
+
+The driver this was ported from found the positive prompt by looking for a
+`CLIPTextEncode` titled `POSITIVE`, which works until somebody renames a node.
+The index already locates every role by walking the graph from the sampler,
+because it had to read graphs nobody wrote for it, and the same walk works for
+writing. So a template needs no special titles, and the reader and the writer
+cannot disagree about which node is which.
+
+Two things that walk found, both in real templates and neither in a synthetic
+one:
+
+A `ControlNetApplyAdvanced` takes a positive *and* a negative conditioning, so a
+walk that always tried `positive` first followed the wrong edge for the negative
+and put both prompts in one node. The walk now follows the branch it came down.
+
+Flux and Z-Image templates derive the negative from the positive through a
+`ConditioningZeroOut`, so the graph has one encoder and no negative prompt to
+write. `--negative` there overwrote the prompt, leaving a plate whose record
+said one thing and whose pixels came from another. It is refused now, by name.
+
+An unused LoRA slot is zeroed rather than unwired, because rewiring a graph by
+hand is where a sweep quietly starts producing something other than what its
+record says it produced.
 
 ## Index
 
@@ -518,6 +582,8 @@ klin/                    the Python package
   fetch/                 vendor adapters, discovered rather than listed
     hf.py                huggingface.co
     civitai.py           civitai.com
+  gen/                   generators, discovered rather than listed
+    comfy.py             a local ComfyUI, patched by role
   index/                 what is on this machine, and what made it
     png.py               chunk framing, stdlib only
     comfy.py             the graph a ComfyUI output carries about itself
