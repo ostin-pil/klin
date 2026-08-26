@@ -142,6 +142,30 @@ that are not on its list.
 machine-specific path belongs rather than in a committed file. The layout is
 `<cache>/<vendor>/<id>/<filename>`, with the `meta.json` sidecar alongside.
 
+That override has a failure mode worth knowing about, because it is silent by
+construction. A variable set when the files were fetched and unset later
+resolves somewhere else entirely, and nothing appears to break: the records
+still point at real files, the audit still passes, and the next fetch downloads
+seventeen gigabytes into a second tree. Barinn spent two sessions in that state,
+every weight under `D:/klin-cache` and a manifest naming `%LOCALAPPDATA%`.
+
+So `klin ledger audit` checks whether any recorded file lives under the cache in
+force, which is a different question from whether the recorded files exist. That
+second question stays answered "yes" throughout the whole failure.
+
+```
+note: cache_dir resolves to C:\Users\pilyu\AppData\Local\klin\cache,
+      and none of the 14 recorded file(s) are under it. They are in:
+        D:\klin-cache\civitai\1406637
+      Set KLIN_CACHE to the tree that is actually in use, or correct
+      cache_dir.
+```
+
+It is a note and never a failure. A project may legitimately keep assets outside
+the cache, and klin cannot tell that apart from a variable that has gone
+missing. What it can do is stop the discrepancy being invisible, which is the
+only reason such a state persists.
+
 `--as <subdirectory>` additionally hardlinks the file into `models_dir`
 (or `KLIN_MODELS`) so a downstream tool sees it without a second copy. A
 hardlink rather than a copy because a checkpoint is seventeen gigabytes, and
@@ -277,6 +301,45 @@ all. Records persist only `reviewed_at` and an explicit waiver.
 **A waiver downgrades a finding, it never removes one.** A waived record still
 appears in the audit, tagged, carrying the same rule text. An accepted risk that
 has stopped being visible has stopped being accepted.
+
+## The one rule klin brings itself
+
+Every rule above is the consuming project's, transcribed from its own policy
+document, because klin holds no opinions about licences. There is one
+exception, and it holds no opinion either.
+
+A licence klin cannot classify falls into the `unknown` family, and no family
+rule can match it. A project's table denies share-alike, or noncommercial, or
+whatever it has decided about; nothing in it denies "we could not tell". So an
+unclassifiable record passed the ship gate silently, and a pass that meant "the
+rules never reached this one" printed identically to a pass that meant "the
+rules applied and were satisfied". That is a statement about the audit rather
+than about any licence, which is why it belongs here.
+
+```
+FAIL  klin (unclassified)  barinn-authored-props
+      licence LicenseRef-Barinn-Own classified as unknown
+      klin could not classify this licence, so no family rule above can have
+      applied to it. That is a gap in the audit rather than a verdict on the
+      licence. Settle it by setting licence.families on the record [...]
+```
+
+It carries no rule number, because it was not transcribed from anybody's policy
+document and citing a number it never had would misattribute it. It fires only
+at the ship gate, since a prototype takes anything and the stage rule's whole
+content is that the thing gets written down. The escape hatch is the one already
+documented: set `licence.families` by hand. A waiver works too, and downgrades
+rather than removes, like any other.
+
+**An empty family list is a result, not an absence.** A vendor publishing
+permission flags instead of an identifier is read by its adapter, and flags
+carrying no restriction klin tracks derive to `[]`. Testing that list for
+truthiness could not tell "checked, nothing applies" from "nobody said", so it
+fell through to the identifier and a `LicenseRef-` id classified as `unknown`.
+Seven of Barinn's Civitai LoRAs sat in that state with `allowCommercialUse:
+[Image, Sell]` in their sidecars. Reporting a resolved licence as unresolved is
+the mirror of inventing one, and with the gate above now stopping on `unknown`,
+the conflation would have become a false failure rather than a quiet one.
 
 ## Set-level rules
 
