@@ -23,6 +23,7 @@ the sidecar keeps the whole response so a re-classification never needs a
 re-download.
 """
 
+import hashlib
 import importlib
 import io
 import json
@@ -87,6 +88,12 @@ def configure(parser):
             "--dry-run",
             action="store_true",
             help="resolve and classify, but download nothing",
+        )
+        sub.add_argument(
+            "--adopt",
+            default=None,
+            metavar="PATH",
+            help="record a file already on disk as this one, fetching nothing",
         )
         module.configure(sub)
         sub.set_defaults(func=_run_adapter, module=module)
@@ -204,6 +211,161 @@ def link_into_models(ctx, path, kind):
         shutil.copy2(path, target)
         ctx.say("note: hardlink unavailable across volumes; copied instead")
     return target
+
+
+def find_local(ctx, expected_size, expected_sha256):
+    """A file already on this machine whose bytes are the vendor's, or None.
+
+    Downloading something the machine already holds is the common case, not the
+    exceptional one: a model tree is usually older than the tool recording it,
+    and the same weight arrives under different names from different vendors.
+    So the search runs before every transfer rather than behind a flag.
+
+    **Size first, hash second.** The vendor publishes a size, so a stat over
+    the tree reduces tens of thousands of files to the handful that could
+    possibly be this one, and only those get read. Hashing a tree to find one
+    file would cost more than downloading it.
+
+    **A published hash is required.** A size match alone is not provenance:
+    `sd_xl_base_1.0.safetensors` and `sd_xl_base_1.0_0.9vae.safetensors` are
+    byte-identical in length and different models. Adopting on size would have
+    recorded one as the other, silently, and the record would have been false.
+    Explicit `--adopt` is allowed to proceed on size and header alone because a
+    person named that file; this runs unattended and may not guess.
+    """
+    if not expected_size or not expected_sha256:
+        return None
+
+    roots = []
+    for root in (ctx.models_dir(), _cache_root(ctx)):
+        if root and os.path.isdir(root) and root not in roots:
+            roots.append(root)
+    if not roots:
+        return None
+
+    candidates = []
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for filename in filenames:
+                path = os.path.join(dirpath, filename)
+                try:
+                    if os.path.getsize(path) == int(expected_size):
+                        candidates.append(path)
+                except OSError:
+                    continue
+    if not candidates:
+        return None
+
+    wanted = str(expected_sha256).lower()
+    for path in candidates:
+        digest = hashlib.sha256()
+        try:
+            with io.open(path, "rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(block)
+        except OSError:
+            continue
+        if digest.hexdigest() == wanted:
+            return path
+
+    ctx.say(
+        "note: %d file(s) here are the right size and none has the vendor's "
+        "hash, so this is a real download" % len(candidates)
+    )
+    return None
+
+
+def _cache_root(ctx):
+    try:
+        return ctx.cache_dir()
+    except Exception:
+        return None
+
+
+def adopt(ctx, path, expected_size=None, expected_sha256=None):
+    """Record a file already on disk as the vendor's, transferring nothing.
+
+    Every model tree predates the tool that would have recorded it. Barinn's
+    held sixty-nine gigabytes of base models across five files, none of them
+    fetched through klin, and every image they produced was therefore
+    untraceable. The options were re-downloading all of it to learn what was
+    already on the disk, or writing the records by hand and inventing the
+    licences. Neither is acceptable, so this is the third one.
+
+    **Adoption is a fetch minus the transfer, not a weaker fetch.** The guards
+    that make a downloaded file trustworthy are all properties of the bytes
+    rather than of how they arrived: the size matches what the vendor
+    publishes, a `.safetensors` header parses, and the digest matches the
+    vendor's own hash. Running those against a local file proves the same thing
+    a download proves, which is that this is the vendor's file.
+
+    So a mismatch is refused rather than noted. A record is an assertion about
+    provenance, and writing one for a file that failed the vendor's own hash
+    would assert something klin has just disproved. The two guards that cannot
+    run are the transport's own (content type, and the partial-file check), and
+    neither says anything about a file that is already complete.
+    """
+    path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+    if not os.path.isfile(path):
+        raise FetchError("--adopt %s is not a file" % path)
+
+    size = os.path.getsize(path)
+    if expected_size and int(size) != int(expected_size):
+        raise FetchError(
+            "%s is %d bytes and the vendor publishes %d. This is not that "
+            "file, so klin will not record it as one. Check the revision, or "
+            "the variant: repositories often hold several quantisations whose "
+            "names differ by a few characters." % (path, size, int(expected_size))
+        )
+
+    if path.endswith(".safetensors"):
+        net.check_safetensors(path)
+
+    ctx.say("hashing %s (%.1f GiB)" % (path, size / float(1 << 30)))
+    digest = hashlib.sha256()
+    with io.open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    got = digest.hexdigest()
+
+    if expected_sha256:
+        if got.lower() != str(expected_sha256).lower():
+            raise FetchError(
+                "sha256 mismatch: vendor publishes %s, %s hashes to %s. The "
+                "bytes on disk are not the bytes the vendor serves, and a "
+                "record saying otherwise would be false."
+                % (expected_sha256, path, got)
+            )
+        ctx.say("sha256 matches the vendor's published hash")
+    else:
+        ctx.say(
+            "note: this vendor publishes no hash for the file, so the size and "
+            "the safetensors header are the whole of the check"
+        )
+
+    return {
+        "path": path,
+        "bytes": size,
+        "sha256": got,
+        "content_type": None,
+        "final_url": None,
+        "adopted": True,
+    }
+
+
+def write_sidecar_beside(path, payload):
+    """The vendor's metadata for an adopted file, as `<file>.meta.json`.
+
+    The cache gives every file its own directory, so a plain `meta.json` is
+    unambiguous there. A weights tree does not: adopting two checkpoints from
+    the same directory would have the second overwrite the first's metadata,
+    silently and with a file that looks right.
+    """
+    sidecar = path + ".meta.json"
+    with io.open(sidecar, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+    return sidecar
 
 
 def classify(ctx, record, derived=None):

@@ -51,9 +51,18 @@ is a rule about what a tool may infer, not a suggestion that the question is
 open.
 
 Do not skip this and let the record stand unclassified. `unknown` fails the
-stage rule, which is the point, and an asset classified by guess would pass a
-ship gate that ought to stop it. If the terms do not settle the question, say so
-and ask rather than choosing a family that makes the audit quiet.
+**ship** gate, under klin's own `unclassified` finding, because no family rule a
+project writes can match a licence klin could not classify, and a silent pass
+would have meant "the rules never reached this one". The stage rule is the
+weaker test and asks only that the thing is written down, so a prototype still
+moves. An asset classified by guess, meanwhile, would pass a gate that ought to
+stop it. If the terms do not settle the question, say so and ask rather than
+choosing a family that makes the audit quiet.
+
+An empty family list is a different thing from `unknown`, and it is a real
+answer. It means the vendor's own permission flags were read and none of them
+restricts anything klin tracks, which is the normal state of a permissively
+licensed Civitai model. Leave it alone.
 
 A Civitai model with several versions makes klin refuse and list them, because
 picking one silently would fetch a Flux LoRA when the workflow wanted the

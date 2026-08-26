@@ -6,6 +6,13 @@
     klin ledger render [--check]
     klin secret set <name> | get <name> | list | rm <name> | doctor
     klin fetch <vendor> ...
+    klin index build [--rescan] [--prune] | status
+    klin ls [--lora X] [--model X] [--seed N] [--since D] [--check]
+    klin show <path fragment>
+
+`ls` and `show` sit at the top level rather than under `index` because they are
+the interface to the corpus, not to the scanner. Somebody browsing what they
+have should not have to know that a database is what makes it possible.
 
 Verbs are roles. Vendors arrive later as adapters under `fetch` and `gen`, and
 adding one must never require touching this file's structure. `fetch` keeps
@@ -19,10 +26,11 @@ import getpass
 import io
 import json
 import os
+import re
 import sys
 import textwrap
 
-from . import fetch, ledger, manifest, net, policy, render, secrets
+from . import fetch, index, ledger, manifest, net, policy, render, secrets
 
 WRAP = 78
 
@@ -89,14 +97,50 @@ def _print_finding(stream, finding):
         finding.level, finding.level
     )
     where = finding.record_id or "(whole set)"
-    _out(
-        stream,
-        "%s rule %s (%s)  %s" % (label, finding.number, finding.rule_id, where),
-    )
+    # klin's own coverage finding carries no rule number, because it was not
+    # transcribed from the project's policy document and citing a number it
+    # never had would misattribute it.
+    cited = "rule %s (%s)" % (finding.number, finding.rule_id)
+    if finding.number is None:
+        cited = "klin (%s)" % finding.rule_id
+    _out(stream, "%s %s  %s" % (label, cited, where))
     _out(stream, "      %s" % finding.summary)
     if finding.text:
         for line in textwrap.wrap(finding.text, WRAP - 6):
             _out(stream, "      %s" % line)
+    _out(stream)
+
+
+def _report_drift(stream, data, records):
+    """Say when the resolved cache is not the one the ledger was written in.
+
+    A note rather than a failure. A project may legitimately keep assets
+    outside the cache, and this cannot tell that apart from a variable that has
+    gone missing. What it can do is stop the discrepancy being invisible, which
+    is the only reason the state persists.
+    """
+    try:
+        cache = manifest.cache_dir(data, default=None)
+    except manifest.ManifestError:
+        return
+    drift = ledger.cache_drift(records, cache)
+    if not drift:
+        return
+    _out(stream, "note: cache_dir resolves to %s," % drift["cache"])
+    _out(
+        stream,
+        "      and none of the %d recorded file(s) are under it. They are in:"
+        % drift["recorded"],
+    )
+    for where in drift["elsewhere"]:
+        _out(stream, "        %s" % where)
+    for line in textwrap.wrap(
+        "Set %s to the tree that is actually in use, or correct cache_dir. "
+        "Left alone, the next fetch downloads into the empty one and nothing "
+        "reports a problem." % manifest.CACHE_ENV,
+        WRAP - 6,
+    ):
+        _out(stream, "      %s" % line)
     _out(stream)
 
 
@@ -113,6 +157,8 @@ def cmd_audit(args, stream):
         % (gate, len(records), data.get("policy_doc", "(unset)")),
     )
     _out(stream)
+
+    _report_drift(stream, data, records)
 
     findings = policy.evaluate(records, rules, facts, ship=args.ship)
     for finding in findings:
@@ -157,6 +203,340 @@ def cmd_render(args, stream):
     io.open(target, "w", encoding="utf-8", newline="\n").write(updated)
     _out(stream, "rendered %d record(s) into %s" % (len(records), shown))
     return 0
+
+
+def _index(args):
+    """Open the index, and hand back the manifest that located it."""
+    data, _ = _load(args)
+    return index.connect(index.db_path(data)), data
+
+
+def _resolver(args, data):
+    """The model map and the ledger, which every licence verdict needs.
+
+    Built once per command rather than once per row: it walks the weights tree
+    and stats each file, which is cheap for thirty models and wasteful for a
+    thousand images.
+    """
+    records = _records(args, data)
+    return index.model_map(index.models_dir(data), records), records
+
+
+def cmd_index_build(args, stream):
+    conn, data = _index(args)
+    project = data.get("product_name") or "(unnamed)"
+    wanted = [os.path.abspath(r) for r in (args.root or [])] or index.roots(data)
+    if not wanted:
+        _out(stream, "no index roots. Add an `index.roots` list to the manifest,")
+        _out(stream, "or pass --root; klin will not guess where outputs live.")
+        return 2
+
+    patterns = index.claims(data)
+    limit = None if args.hash_large else index.HASH_LIMIT
+    conflicts = []
+    for root in wanted:
+        _out(stream, "scanning %s" % root)
+        got = index.scan(
+            conn,
+            root,
+            project,
+            patterns,
+            rescan=args.rescan,
+            hash_limit=limit,
+            say=lambda text: _out(stream, text),
+        )
+        conflicts.extend(got["conflicts"])
+        _out(
+            stream,
+            "  %d file(s): %d added, %d updated, %d unchanged, %d with provenance"
+            % (
+                got["seen"],
+                got["added"],
+                got["updated"],
+                got["skipped"],
+                got["provenance"],
+            ),
+        )
+        if got["unclaimed"]:
+            _out(
+                stream,
+                "  %d unclaimed by %s, and indexed all the same"
+                % (got["unclaimed"], project),
+            )
+
+    if args.prune:
+        gone = index.forget_missing(conn)
+        _out(stream, "pruned %d row(s) whose file has gone" % len(gone))
+
+    for path, held, also in conflicts:
+        _out(stream)
+        _out(stream, "conflict: %s" % path)
+        _out(
+            stream,
+            "  claimed by %s and now also by %s; kept %s. Narrow one of the "
+            "`index.claim` patterns rather than leaving klin to pick."
+            % (held, also, held),
+        )
+
+    _out(stream)
+    _out(stream, "next: klin ls")
+    return 0
+
+
+def cmd_index_status(args, stream):
+    conn, data = _index(args)
+    got = index.status(conn)
+    _out(stream, "klin index: %s" % index.db_path(data))
+    _out(stream)
+    _out(
+        stream,
+        "%d item(s) | %d with provenance | %d unclaimed | %d distinct workflow(s)"
+        % (got["items"], got["with_provenance"], got["unclaimed"], got["workflows"]),
+    )
+    if got["unhashed"]:
+        _out(
+            stream,
+            "%d indexed without a hash, being over %d MiB; --hash-large includes them"
+            % (got["unhashed"], index.HASH_LIMIT // (1024 * 1024)),
+        )
+    for label, rows in (("projects", got["projects"]), ("roots", got["roots"])):
+        if not rows:
+            continue
+        _out(stream)
+        _out(stream, label)
+        for name, count in rows:
+            _out(stream, "  %6d  %s" % (count, name if name else "(unclaimed)"))
+    if got["models"]:
+        _out(stream)
+        _out(stream, "base models")
+        for name, count in got["models"]:
+            _out(stream, "  %6d  %s" % (count, name))
+    return 0
+
+
+def _short(name):
+    return re.sub(r"\.(safetensors|ckpt|pt|pth|gguf|sft)$", "", str(name or ""))
+
+
+def _families(entry):
+    """How to render a classification, including the one that is empty.
+
+    An empty set is a real answer: the licence was read and nothing klin tracks
+    restricts it. Rendering that as a blank column would read as missing data,
+    which is the opposite of what it means.
+    """
+    return ", ".join(entry["families"]) or "no family applies"
+
+
+def _stack(conn, path):
+    """The LoRA stack as one readable string, strengths included."""
+    return " + ".join(
+        "%s@%s" % (_short(os.path.basename(str(l["name"] or "?"))), l["strength"])
+        for l in index.loras_of(conn, path)
+    )
+
+
+def _filters(args):
+    return {
+        "project": args.project,
+        "unclaimed": args.unclaimed,
+        "model": args.model,
+        "lora": args.lora,
+        "seed": args.seed,
+        "prompt": args.prompt,
+        "workflow": args.workflow,
+        "since": args.since,
+        "kind": args.kind,
+        "limit": args.limit,
+    }
+
+
+def cmd_ls(args, stream):
+    conn, data = _index(args)
+    rows = index.query(conn, **_filters(args))
+    if not rows:
+        _out(stream, "nothing in the index matches. `klin index status` shows what is.")
+        return 0
+
+    models, records = _resolver(args, data)
+    rules = manifest.rules(data)
+    facts = manifest.build_facts(data)
+    verdicts = [
+        index.verdict(conn, row["path"], models, records, rules, facts) for row in rows
+    ]
+
+    if args.json:
+        out = []
+        for row, got in zip(rows, verdicts):
+            item = dict(row)
+            item.pop("graph", None)
+            item["loras"] = [dict(l) for l in index.loras_of(conn, row["path"])]
+            item["ship"] = got["ship"]
+            item["licences"] = got["models"]
+            item["unresolved"] = got["unresolved"]
+            out.append(item)
+        _out(stream, json.dumps(out, indent=2, default=str))
+        return 0
+
+    failing = untraced = 0
+    _out(stream, "%d item(s)" % len(rows))
+    _out(stream)
+    _out(stream, "SHIP  %-42s %-11s %-8s %s" % ("FILE", "SIZE", "SEED", "MODEL"))
+    for row, got in zip(rows, verdicts):
+        if got["unresolved"]:
+            mark, _ = "?", untraced
+            untraced += 1
+        elif got["ship"]:
+            mark = "yes"
+        else:
+            mark = "NO"
+            failing += 1
+        model = _short(os.path.basename(str(row["model"] or "(no graph)")))
+        stack = _stack(conn, row["path"])
+        if stack:
+            model += " + " + stack
+        _out(
+            stream,
+            "%-5s %-42s %-11s %-8s %s"
+            % (
+                mark,
+                os.path.basename(row["path"])[:42],
+                "%sx%s" % (row["width"], row["height"]) if row["width"] else "-",
+                row["seed"] if row["seed"] is not None else "-",
+                model,
+            ),
+        )
+
+    _out(stream)
+    if untraced:
+        _out(
+            stream,
+            "%d marked ? : a model klin cannot trace to a ledger record. That is "
+            "not a pass, and `klin show <file>` says which model." % untraced,
+        )
+    if args.check:
+        _out(stream, "%d item(s) fail the ship gate" % failing)
+        return 1 if (failing or untraced) else 0
+    return 0
+
+
+def _match(conn, target):
+    """Find items by exact path, then by substring or sha256 prefix."""
+    target = str(target)
+    exact = conn.execute(
+        "SELECT * FROM item WHERE path = ?", (os.path.normpath(target),)
+    ).fetchall()
+    if exact:
+        return exact
+    return conn.execute(
+        "SELECT * FROM item WHERE REPLACE(LOWER(path), '\\', '/') LIKE ? "
+        "OR LOWER(sha256) LIKE ? ORDER BY mtime DESC",
+        ("%" + target.replace("\\", "/").lower() + "%", target.lower() + "%"),
+    ).fetchall()
+
+
+def cmd_show(args, stream):
+    conn, data = _index(args)
+    rows = _match(conn, args.target)
+    if not rows:
+        _out(stream, "nothing in the index matches %r" % args.target)
+        return 2
+    if len(rows) > 1:
+        _out(stream, "%r matches %d items:" % (args.target, len(rows)))
+        for row in rows[:20]:
+            _out(stream, "  %s" % row["path"])
+        if len(rows) > 20:
+            _out(stream, "  ... and %d more" % (len(rows) - 20))
+        _out(stream, "Narrow it; klin will not pick one for you.")
+        return 2
+
+    row = rows[0]
+    models, records = _resolver(args, data)
+    got = index.verdict(
+        conn,
+        row["path"],
+        models,
+        records,
+        manifest.rules(data),
+        manifest.build_facts(data),
+    )
+
+    _out(stream, row["path"])
+    _out(
+        stream,
+        "  %s  %.1f MiB  sha256 %s"
+        % (
+            "%sx%s" % (row["width"], row["height"]) if row["width"] else "-",
+            (row["bytes"] or 0) / float(1 << 20),
+            (row["sha256"] or "(not hashed)")[:16],
+        ),
+    )
+    _out(stream, "  project   %s" % (row["project"] or "(unclaimed)"))
+    if row["workflow"]:
+        _out(stream, "  workflow  %s" % row["workflow"][:16])
+    settings = "  ".join(
+        "%s %s" % (key, row[key])
+        for key in ("seed", "steps", "cfg", "sampler", "scheduler")
+        if row[key] is not None
+    )
+    if settings:
+        _out(stream, "  %s" % settings)
+    for note in json.loads(row["notes"] or "[]"):
+        _out(stream, "  note: %s" % note)
+
+    _out(stream)
+    _out(stream, "models")
+    for entry in got["models"]:
+        label = entry["role"]
+        if entry["strength"] is not None:
+            label += "@%s" % entry["strength"]
+        _out(
+            stream,
+            "  %-12s %-38s -> %s (%s)"
+            % (
+                label,
+                _short(os.path.basename(str(entry["name"])))[:38],
+                entry["record"],
+                entry["how"],
+            ),
+        )
+        _out(
+            stream,
+            "  %-12s %s  [%s]"
+            % ("", entry["licence"] or "(unrecorded)", _families(entry)),
+        )
+    for entry in got["unresolved"]:
+        label = entry["role"]
+        if entry["strength"] is not None:
+            label += "@%s" % entry["strength"]
+        _out(
+            stream,
+            "  %-12s %-38s -> %s"
+            % (label, _short(os.path.basename(str(entry["name"])))[:38], entry["why"]),
+        )
+
+    _out(stream)
+    _out(stream, "ship: %s" % ("yes" if got["ship"] else "NO"))
+    _out(stream)
+    for finding in got["findings"]:
+        _print_finding(stream, finding)
+    if got["unresolved"]:
+        for line in textwrap.wrap(
+            "%d model(s) here could not be traced to a ledger record. klin "
+            "reports that rather than passing them: an asset whose origin is "
+            "unknown is exactly the case a ship gate exists to catch. Fetch it "
+            "through klin, or add a record by hand."
+            % len(got["unresolved"]),
+            WRAP,
+        ):
+            _out(stream, line)
+        _out(stream)
+
+    if row["prompt"] and not args.no_prompt:
+        _out(stream, "prompt")
+        for line in textwrap.wrap(row["prompt"], WRAP - 2):
+            _out(stream, "  %s" % line)
+    return 0 if got["ship"] else 1
 
 
 def _declared(args):
@@ -314,6 +694,62 @@ def build_parser():
         verbs.add_parser("fetch", help="acquire an asset from a vendor")
     )
 
+    idx = verbs.add_parser("index", help="scan what is on this machine")
+    scans = idx.add_subparsers(dest="action")
+
+    building = scans.add_parser("build", help="scan the roots and update the index")
+    building.add_argument(
+        "--root",
+        action="append",
+        help="scan this directory instead of the manifest's roots",
+    )
+    building.add_argument(
+        "--rescan", action="store_true", help="re-read every file, changed or not"
+    )
+    building.add_argument(
+        "--prune", action="store_true", help="drop rows whose file has gone"
+    )
+    building.add_argument(
+        "--hash-large",
+        action="store_true",
+        help="hash files over the size limit too, which is slow",
+    )
+    building.set_defaults(func=cmd_index_build)
+
+    reporting = scans.add_parser("status", help="what the index holds")
+    reporting.set_defaults(func=cmd_index_status)
+
+    listing_items = verbs.add_parser("ls", help="list indexed items")
+    for name, help_text in (
+        ("--project", "only items claimed by this project"),
+        ("--model", "base model name, substring match"),
+        ("--lora", "a LoRA in the stack, substring match"),
+        ("--prompt", "text anywhere in the positive prompt"),
+        ("--workflow", "workflow hash, or a prefix of one"),
+        ("--since", "modified on or after YYYY-MM-DD"),
+        ("--kind", "image, mesh or model"),
+    ):
+        listing_items.add_argument(name, default=None, help=help_text)
+    listing_items.add_argument("--seed", type=int, default=None)
+    listing_items.add_argument("--limit", type=int, default=None)
+    listing_items.add_argument(
+        "--unclaimed", action="store_true", help="only items no project claims"
+    )
+    listing_items.add_argument("--json", action="store_true")
+    listing_items.add_argument(
+        "--check",
+        action="store_true",
+        help="exit non-zero if anything listed fails the ship gate",
+    )
+    listing_items.set_defaults(func=cmd_ls)
+
+    showing = verbs.add_parser("show", help="everything known about one item")
+    showing.add_argument("target", help="a path, a filename fragment, or a sha256")
+    showing.add_argument(
+        "--no-prompt", action="store_true", help="leave the prompt text out"
+    )
+    showing.set_defaults(func=cmd_show)
+
     sec = verbs.add_parser("secret", help="credentials an adapter needs")
     kinds = sec.add_subparsers(dest="action")
 
@@ -366,6 +802,7 @@ def main(argv=None, stream=None):
         secrets.SecretError,
         net.NetError,
         fetch.FetchError,
+        index.IndexingError,
     ) as exc:
         _out(stream, "klin: %s" % exc)
         return 2

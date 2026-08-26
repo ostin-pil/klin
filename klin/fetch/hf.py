@@ -34,15 +34,18 @@ import re
 from urllib.parse import parse_qsl, urlsplit
 from urllib.request import Request, urlopen
 
-from .. import net
+from .. import net, spdx
 from . import (
+    adopt,
     classify,
+    find_local,
     finish,
     link_into_models,
     record_for,
     report_classification,
     target_path,
     write_sidecar,
+    write_sidecar_beside,
 )
 from .civitai import derive_families
 
@@ -132,6 +135,28 @@ def flags_from_link(link):
             payload[key] = _as_bool(value)
     payload["allowCommercialUse"] = commercial
     return payload
+
+
+def _declared_sha256(payload, filename):
+    """The digest the Hub publishes for an LFS file.
+
+    Every weight worth fetching is stored in LFS, and the pointer carries the
+    file's sha256. It is the strongest identity check available here and it
+    costs nothing extra, because `?blobs=true` already returns it beside the
+    size the size guard was reading anyway.
+
+    The Hub spells it `sha256`. `oid` is the spelling in Git LFS's own pointer
+    format and in some of the Hub's other responses, so both are read: a guard
+    that finds neither reports nothing rather than a false pass, but silently
+    checking nothing because of a key name is the failure this file already
+    warns about for `files_metadata=true`.
+    """
+    for sibling in payload.get("siblings") or []:
+        if sibling.get("rfilename") == filename:
+            lfs = sibling.get("lfs") or {}
+            got = lfs.get("sha256") or lfs.get("oid")
+            return str(got) if got and len(str(got)) == 64 else None
+    return None
 
 
 def _declared_size(payload, filename):
@@ -236,11 +261,28 @@ def run(args, ctx):
         if link:
             ctx.say("license_link: %s" % link)
 
-    if how == "unknown":
-        where, text = licence_text(repo_id, args.revision, payload, link)
+    # The terms are recorded whatever the classification turned out to be.
+    # Gating this on `unknown` tied the presence of a document to the outcome
+    # of a lookup, which are unrelated: passing `--families` to settle an
+    # OpenRAIL model by hand made klin stop recording the very text that
+    # justified the decision, and a rule requiring `licence.text` then failed
+    # the record for a file it had been holding one run earlier.
+    where, text = licence_text(repo_id, args.revision, payload, link)
+    if text:
+        record["licence"]["text"] = text
+        record["licence"]["url"] = where
+        ctx.say("licence text: %d characters from %s" % (len(text), where))
+
+    if not record["licence"]["text"]:
+        # A recognised identifier has exactly one text in SPDX's register, so
+        # recording what the register says it is amounts to a lookup. Reached
+        # only when the repository itself publishes no licence document, which
+        # is the ordinary case for a model card carrying a clean SPDX tag:
+        # neither Comfy-Org repository Barinn adopted ships a LICENSE file, and
+        # the terms were never in doubt, only somewhere else.
+        where, text = spdx.text(ident)
         if text:
             record["licence"]["text"] = text
-            record["licence"]["url"] = where
             ctx.say("licence text: %d characters from %s" % (len(text), where))
 
     report_classification(ctx, record, how, found)
@@ -254,6 +296,36 @@ def run(args, ctx):
         ctx.say("      to %s" % dest)
         ctx.say("  declared size: %s" % (size if size else "not published"))
         return 0
+
+    published = _declared_sha256(payload, filename)
+    here = args.adopt
+    if not here and not args.force:
+        here = find_local(ctx, size, published)
+        if here:
+            ctx.say("already on this machine, so nothing is downloaded:")
+            ctx.say("  %s" % here)
+
+    if here:
+        facts = adopt(
+            ctx,
+            here,
+            expected_size=size,
+            expected_sha256=published,
+        )
+        write_sidecar_beside(facts["path"], payload)
+        record["source"]["mirror_of"] = url
+        record["notes"] = " ".join(
+            filter(
+                None,
+                [
+                    record.get("notes"),
+                    "adopted from disk: the file predates klin and was verified "
+                    "against the vendor's published size and hash rather than "
+                    "re-downloaded.",
+                ],
+            )
+        )
+        return finish(ctx, record, facts)
 
     write_sidecar(dest, payload)
     ctx.say("fetching %s" % url)

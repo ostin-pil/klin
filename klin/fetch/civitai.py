@@ -36,13 +36,16 @@ import os
 
 from .. import net
 from . import (
+    adopt,
     classify,
+    find_local,
     finish,
     link_into_models,
     record_for,
     report_classification,
     target_path,
     write_sidecar,
+    write_sidecar_beside,
 )
 
 NAME = "civitai"
@@ -218,6 +221,38 @@ def run(args, ctx):
         ctx.say("      to %s" % dest)
         ctx.say("  declared size: %s" % (size if size else "not published"))
         return 0
+
+    published = ((item.get("hashes") or {}).get("SHA256") or "") or None
+    here = args.adopt
+    if not here and not args.force:
+        here = find_local(ctx, size, published)
+        if here:
+            ctx.say("already on this machine, so nothing is downloaded:")
+            ctx.say("  %s" % here)
+
+    if here:
+        facts = adopt(
+            ctx,
+            here,
+            expected_size=size,
+            expected_sha256=published,
+        )
+        write_sidecar_beside(
+            facts["path"], {"model": payload, "version": version, "file": item}
+        )
+        record["source"]["mirror_of"] = url
+        record["notes"] = " ".join(
+            filter(
+                None,
+                [
+                    record.get("notes"),
+                    "adopted from disk: the file predates klin and was verified "
+                    "against the vendor's published size and hash rather than "
+                    "re-downloaded.",
+                ],
+            )
+        )
+        return finish(ctx, record, facts)
 
     write_sidecar(dest, {"model": payload, "version": version, "file": item})
     ctx.say("fetching version %s, %s" % (version.get("id"), item.get("name")))

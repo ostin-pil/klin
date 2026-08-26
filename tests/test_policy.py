@@ -150,3 +150,144 @@ def test_a_waiver_for_one_rule_does_not_waive_another(repo):
     item["waiver"] = {"rules": ["no-share-alike"]}
     fails = policy.failed(policy.evaluate([item], rules, facts, ship=True))
     assert [f.rule_id for f in fails] == ["excluded-licences"]
+
+
+# --------------------------- an empty family list is a result, not an absence
+
+
+def test_a_derived_empty_list_is_a_classification_not_a_gap():
+    """The conflation that made seven of Barinn's LoRAs read as unknown.
+
+    A Civitai adapter reads permission flags rather than an identifier, and
+    flags carrying no restriction derive to `[]`. Testing that list for
+    truthiness could not tell it from a missing key, so it fell through to a
+    `LicenseRef-` id and classified as `unknown`.
+    """
+    item = record("x", "LicenseRef-Civitai-648058")
+    item["licence"]["families"] = []
+    assert policy.families(item) == set()
+
+
+def test_an_empty_list_without_an_identifier_is_still_unlicensed():
+    """Nothing was recorded, so there was nothing to have checked."""
+    item = record("x", licence_id=None)
+    item["licence"]["families"] = []
+    assert policy.families(item) == {"unlicensed"}
+
+
+# ------------------------------------------------- the coverage finding
+
+
+def test_the_ship_gate_stops_on_a_licence_it_could_not_classify(repo):
+    made = repo()
+    data, rules, facts = rules_for(made)
+    records = [record("mystery", "LicenseRef-Nobody-Knows")]
+
+    findings = policy.evaluate(records, rules, facts, ship=True)
+    coverage = [f for f in findings if f.rule_id == "unclassified"]
+    assert len(coverage) == 1
+    assert coverage[0].level == "fail"
+    assert coverage[0].record_id == "mystery"
+    assert coverage[0].number is None
+
+
+def test_the_stage_gate_does_not(repo):
+    """A prototype takes anything; the obligation is only to write it down."""
+    made = repo()
+    data, rules, facts = rules_for(made)
+    records = [record("mystery", "LicenseRef-Nobody-Knows")]
+    findings = policy.evaluate(records, rules, facts, ship=False)
+    assert [f for f in findings if f.rule_id == "unclassified"] == []
+
+
+def test_classifying_it_by_hand_settles_it(repo):
+    made = repo()
+    data, rules, facts = rules_for(made)
+    item = record("mystery", "LicenseRef-Nobody-Knows")
+    item["licence"]["families"] = ["permissive"]
+    findings = policy.evaluate([item], rules, facts, ship=True)
+    assert [f for f in findings if f.rule_id == "unclassified"] == []
+
+
+def test_a_waiver_downgrades_the_coverage_finding_like_any_other(repo):
+    made = repo()
+    data, rules, facts = rules_for(made)
+    item = record("mystery", "LicenseRef-Nobody-Knows")
+    item["waiver"] = {"rules": ["unclassified"], "why": "ours, sorting it out"}
+    findings = policy.evaluate([item], rules, facts, ship=True)
+    coverage = [f for f in findings if f.rule_id == "unclassified"]
+    assert coverage[0].level == "waived"
+    assert policy.failed(findings) == []
+
+
+def test_a_record_with_no_licence_at_all_is_caught_too(repo):
+    made = repo()
+    data, rules, facts = rules_for(made)
+    findings = policy.evaluate(
+        [record("bare", licence_id=None)], rules, facts, ship=True
+    )
+    coverage = [f for f in findings if f.rule_id == "unclassified"]
+    assert coverage and "unlicensed" in coverage[0].summary
+
+
+def test_a_clean_ledger_gains_no_coverage_finding(repo):
+    made = repo()
+    data, rules, facts = rules_for(made)
+    findings = policy.evaluate(
+        [record("fine", "CC0-1.0")], rules, facts, ship=True
+    )
+    assert [f for f in findings if f.rule_id == "unclassified"] == []
+
+
+# ------------------------------------- narrowing a require rule to what klin
+# ------------------------------------- could not read for itself
+
+
+def _text_rule(**extra):
+    rule = {
+        "rule": 5,
+        "id": "storefront-is-not-a-licence",
+        "kind": "require",
+        "when": "ship",
+        "fields": ["licence.text"],
+        "text": 'A storefront is not a licence. "Free" on itch.io is a price.',
+    }
+    rule.update(extra)
+    return rule
+
+
+def test_require_still_catches_every_record_by_default():
+    item = record("bare", "Apache-2.0")
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule()], {}, ship=True)
+    assert [f.rule_id for f in findings if f.number == 5] == [
+        "storefront-is-not-a-licence"
+    ]
+
+
+def test_unless_classified_exempts_a_licence_klin_could_read():
+    """Apache-2.0 has one text in a public register, so demanding the document
+    is demanding something the identifier already settled."""
+    item = record("clean", "Apache-2.0")
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule(unless_classified=True)], {}, ship=True)
+    assert [f for f in findings if f.number == 5] == []
+
+
+def test_unless_classified_still_catches_what_klin_could_not_read():
+    """The record the rule was actually written about."""
+    item = record("murky", "LicenseRef-Some-Storefront")
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule(unless_classified=True)], {}, ship=True)
+    assert [f.rule_id for f in findings if f.number == 5] == [
+        "storefront-is-not-a-licence"
+    ]
+
+
+def test_unless_classified_still_catches_an_unlicensed_record():
+    item = record("bare", licence_id=None)
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule(unless_classified=True)], {}, ship=True)
+    assert [f.rule_id for f in findings if f.number == 5] == [
+        "storefront-is-not-a-licence"
+    ]

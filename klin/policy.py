@@ -37,6 +37,20 @@ def families(record):
     An explicit `licence.families` list on the record wins outright. That is the
     escape hatch for anything no identifier can express — unlicensed fan art of
     a trademarked property being the case this project cares about.
+
+    **An explicit empty list is a result, not an absence.** A vendor that
+    publishes permission flags rather than an identifier is read by its adapter,
+    and flags that carry no restriction klin tracks derive to `[]`. Testing that
+    list for truthiness cannot tell "checked, nothing applies" from "nobody
+    said", so it fell through to the identifier, and a `LicenseRef-` id maps to
+    nothing and classified as `unknown`. Seven of Barinn's Civitai LoRAs sat in
+    that state with `allowCommercialUse: [Image, Sell]` in their sidecars.
+    Reporting a resolved licence as unresolved is the mirror of inventing one,
+    and the ship gate below now stops on `unknown`, so the conflation would have
+    turned into a false failure rather than a quiet one.
+
+    The empty list only counts where an identifier was also recorded. Without
+    one there is nothing to have checked, and the record is `unlicensed`.
     """
     explicit = ledger.field(record, "licence.families")
     if explicit:
@@ -45,6 +59,9 @@ def families(record):
     raw = ledger.field(record, "licence.id")
     if ledger.is_empty(raw):
         return {"unlicensed"}
+
+    if explicit == []:
+        return set()
 
     ident = str(raw).strip().upper().replace("_", "-").replace(" ", "-")
     found = set()
@@ -68,6 +85,40 @@ def families(record):
         found.add("editorial")
 
     return found or {"unknown"}
+
+
+#: Families that mean klin could not settle what a licence permits.
+UNSETTLED = ("unknown", "unlicensed")
+
+#: The one rule klin brings itself, and the reason it is allowed to.
+#:
+#: Every other rule is the consuming project's, transcribed from its own policy
+#: document, because klin holds no opinions about licences. This one holds no
+#: opinion either. It is a statement about the audit rather than about any
+#: licence: a gate that prints "0 failures" while skipping records it could not
+#: classify has misreported its own coverage, and a pass that means "the rules
+#: did not apply here" reads identically to one that means "the rules applied
+#: and were satisfied".
+#:
+#: It fires only at the ship gate. A prototype takes anything, and the stage
+#: rule's whole content is that the thing gets written down.
+#:
+#: The escape hatch is the one already documented: set `licence.families` on
+#: the record by hand and the classification stops being unsettled. A waiver
+#: works too, and downgrades rather than removes, like any other.
+COVERAGE = {
+    "rule": None,
+    "id": "unclassified",
+    "kind": "coverage",
+    "when": "ship",
+    "text": (
+        "klin could not classify this licence, so no family rule above can "
+        "have applied to it. That is a gap in the audit rather than a verdict "
+        "on the licence. Settle it by setting licence.families on the record, "
+        "which is the same escape hatch an adapter uses when a vendor "
+        "publishes no identifier."
+    ),
+}
 
 
 class Finding(object):
@@ -107,9 +158,26 @@ def _applies(rule, ship):
 
 
 def _require(rule, records):
+    """Every listed field must be present on every record.
+
+    `unless_classified: true` narrows that to records whose licence klin could
+    not classify. The case it exists for is a rule demanding the licence text,
+    written because a storefront is not a licence and "Free" on itch.io is a
+    price. That reasoning is about terms nobody can look up, and it does not
+    reach `Apache-2.0`, where the identifier *is* the licence and the register
+    holds one text for it.
+
+    The narrowing is safe in the direction that matters, because it exempts
+    exactly the records klin was able to read and never the ones it could not.
+    A record whose licence is unclassified is precisely the one the rule was
+    written about, and it still has to carry its terms.
+    """
     findings = []
-    for name in rule.get("fields") or []:
-        for record in records:
+    skip_classified = bool(rule.get("unless_classified"))
+    for record in records:
+        if skip_classified and not (families(record) & set(UNSETTLED)):
+            continue
+        for name in rule.get("fields") or []:
             if ledger.is_empty(ledger.field(record, name)):
                 findings.append(
                     Finding(
@@ -210,6 +278,34 @@ def _waived_rules(record):
     return set(waiver.get("rules") or [])
 
 
+def unclassified(records, ship=False):
+    """Records whose licence klin could not settle, as findings.
+
+    Returned at the ship gate only, and as failures, because the alternative is
+    a gate that stays silent about the records its rules could not reach. See
+    `COVERAGE` for why this is the one rule klin supplies.
+    """
+    if not ship:
+        return []
+    found = []
+    for record in records:
+        hit = families(record) & set(UNSETTLED)
+        if hit:
+            found.append(
+                Finding(
+                    COVERAGE,
+                    "fail",
+                    "licence %s classified as %s"
+                    % (
+                        ledger.field(record, "licence.id") or "(unrecorded)",
+                        ", ".join(sorted(hit)),
+                    ),
+                    record_id=record["id"],
+                )
+            )
+    return found
+
+
 def evaluate(records, rules, facts, ship=False):
     """Apply every rule in force and return findings, worst first.
 
@@ -226,6 +322,7 @@ def evaluate(records, rules, facts, ship=False):
         if kind not in _KINDS:
             raise ValueError("rule %r: unknown kind %r" % (rule.get("id"), kind))
         findings.extend(_KINDS[kind](rule, records, facts))
+    findings.extend(unclassified(records, ship=ship))
 
     for finding in findings:
         record = by_id.get(finding.record_id)

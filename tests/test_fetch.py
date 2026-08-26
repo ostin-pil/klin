@@ -805,3 +805,176 @@ def test_a_file_with_a_sibling_part_is_not_reused(tmp_path, monkeypatch):
     serve(monkeypatch, FakeResponse(body, {"Content-Type": "application/octet-stream"}))
     facts = net.download("https://vendor.invalid/m", dest)
     assert facts["reused"] is False
+
+
+# --------------------------------------------------------------------------
+# Adoption: a fetch minus the transfer, for a tree that predates klin.
+# --------------------------------------------------------------------------
+
+import hashlib
+import struct
+
+
+def a_safetensors(path, body=b"\x00" * 64):
+    """A file with a header a real safetensors reader would accept."""
+    header = json.dumps({"__metadata__": {}}).encode("utf-8")
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent)
+    with open(path, "wb") as handle:
+        handle.write(struct.pack("<Q", len(header)) + header + body)
+    return path
+
+
+def sha_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 16), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def test_adoption_records_a_file_without_fetching_it(tmp_path):
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    facts = fetch.adopt(
+        ctx, path, expected_size=os.path.getsize(path), expected_sha256=sha_of(path)
+    )
+    assert facts["adopted"] is True
+    assert facts["sha256"] == sha_of(path)
+    assert any("matches the vendor's published hash" in line for line in ctx.lines)
+
+
+def test_a_size_mismatch_is_refused_not_noted(tmp_path):
+    """A record is an assertion about provenance. Writing one for a file that
+    failed the vendor's own size would assert what klin just disproved."""
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch.adopt(ctx, path, expected_size=os.path.getsize(path) + 1)
+    assert "is not that file" in str(exc.value)
+
+
+def test_a_hash_mismatch_is_refused(tmp_path):
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch.adopt(ctx, path, expected_sha256="0" * 64)
+    assert "would be false" in str(exc.value)
+
+
+def test_a_file_that_is_not_safetensors_is_refused(tmp_path):
+    path = str(tmp_path / "weights.safetensors")
+    with open(path, "wb") as handle:
+        handle.write(b"<!DOCTYPE html><html>not a model</html>")
+    with pytest.raises(net.NetError):
+        fetch.adopt(Ctx(Args(adopt=path)), path)
+
+
+def test_a_missing_file_is_refused(tmp_path):
+    path = str(tmp_path / "nothing.safetensors")
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch.adopt(Ctx(Args(adopt=path)), path)
+    assert "is not a file" in str(exc.value)
+
+
+def test_no_published_hash_says_so_rather_than_implying_a_check(tmp_path):
+    path = a_safetensors(str(tmp_path / "weights.safetensors"))
+    ctx = Ctx(Args(adopt=path))
+    fetch.adopt(ctx, path, expected_size=os.path.getsize(path))
+    assert any("publishes no hash" in line for line in ctx.lines)
+
+
+def test_two_adopted_files_in_one_directory_keep_their_own_metadata(tmp_path):
+    """The cache gives every file its own directory and a weights tree does
+    not, so a plain meta.json would have the second adoption overwrite the
+    first's metadata with something that still looks right."""
+    one = a_safetensors(str(tmp_path / "models" / "a.safetensors"))
+    two = a_safetensors(str(tmp_path / "models" / "b.safetensors"))
+    fetch.write_sidecar_beside(one, {"which": "a"})
+    fetch.write_sidecar_beside(two, {"which": "b"})
+    assert json.load(open(one + ".meta.json"))["which"] == "a"
+    assert json.load(open(two + ".meta.json"))["which"] == "b"
+
+
+@pytest.mark.parametrize("key", ["sha256", "oid"])
+def test_the_hub_digest_is_read_under_either_spelling(key):
+    """The Hub says `sha256`; Git LFS's own pointer format says `oid`. A guard
+    that silently checked nothing because of a key name is the failure this
+    module already warns about for files_metadata=true."""
+    payload = {
+        "siblings": [{"rfilename": "w.safetensors", "lfs": {key: "a" * 64}}]
+    }
+    assert hf._declared_sha256(payload, "w.safetensors") == "a" * 64
+
+
+def test_a_truncated_digest_is_not_offered_as_one():
+    payload = {"siblings": [{"rfilename": "w.safetensors", "lfs": {"sha256": "abc"}}]}
+    assert hf._declared_sha256(payload, "w.safetensors") is None
+
+
+# --------------------------------------------------------------------------
+# Adoption is the default: look before downloading.
+# --------------------------------------------------------------------------
+
+class FindCtx(Ctx):
+    def __init__(self, args, models=None, cache=None):
+        Ctx.__init__(self, args)
+        self._models = models
+        self._cache = cache
+
+    def models_dir(self):
+        return self._models
+
+    def cache_dir(self):
+        if self._cache is None:
+            raise manifest.ManifestError("no cache configured")
+        return self._cache
+
+
+def test_the_vendors_bytes_are_found_before_anything_is_downloaded(tmp_path):
+    tree = str(tmp_path / "models" / "loras")
+    path = a_safetensors(os.path.join(tree, "renamed_by_somebody.safetensors"))
+    ctx = FindCtx(Args(), models=str(tmp_path / "models"))
+    found = fetch.find_local(ctx, os.path.getsize(path), sha_of(path))
+    assert found == path
+
+
+def test_a_name_never_has_to_match(tmp_path):
+    """The whole point: a weights tree is where files get renamed."""
+    tree = str(tmp_path / "models")
+    path = a_safetensors(os.path.join(tree, "nothing", "like", "upstream.bin"))
+    ctx = FindCtx(Args(), models=tree)
+    assert fetch.find_local(ctx, os.path.getsize(path), sha_of(path)) == path
+
+
+def test_a_size_match_alone_is_never_enough(tmp_path):
+    """sd_xl_base_1.0 and sd_xl_base_1.0_0.9vae are the same length and are
+    different models. Adopting on size would record one as the other."""
+    tree = str(tmp_path / "models")
+    decoy = a_safetensors(os.path.join(tree, "decoy.safetensors"), body=b"\x01" * 64)
+    ctx = FindCtx(Args(), models=tree)
+    assert fetch.find_local(ctx, os.path.getsize(decoy), "f" * 64) is None
+    assert any("none has the vendor's hash" in line for line in ctx.lines)
+
+
+def test_no_published_hash_means_no_automatic_adoption(tmp_path):
+    """Unattended, klin may not guess. `--adopt` is the attended path."""
+    tree = str(tmp_path / "models")
+    path = a_safetensors(os.path.join(tree, "w.safetensors"))
+    ctx = FindCtx(Args(), models=tree)
+    assert fetch.find_local(ctx, os.path.getsize(path), None) is None
+
+
+def test_the_cache_is_searched_as_well_as_the_weights_tree(tmp_path):
+    """Which matters exactly when the cache has moved and the old copy is
+    still on disk under the previous root."""
+    cache = str(tmp_path / "old-cache")
+    path = a_safetensors(os.path.join(cache, "hf", "x", "w.safetensors"))
+    ctx = FindCtx(Args(), models=str(tmp_path / "empty"), cache=cache)
+    assert fetch.find_local(ctx, os.path.getsize(path), sha_of(path)) == path
+
+
+def test_no_configured_tree_is_not_an_error(tmp_path):
+    ctx = FindCtx(Args(), models=None)
+    assert fetch.find_local(ctx, 10, "a" * 64) is None
