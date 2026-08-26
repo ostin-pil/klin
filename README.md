@@ -13,10 +13,11 @@ klin applies it and quotes it back.
 
 ## Status
 
-v0.1, the core only. The ledger, the policy engine and the renderer are built
-and tested. No vendor adapter exists yet. That order is deliberate: the shared
-core is the reason this is one repo rather than several, so it exists before
-anything depends on it.
+v0.1. The ledger, the policy engine and the renderer came first, because the
+shared core is the reason this is one repo rather than several, so it exists
+before anything depends on it. On top of it sit two vendor adapters under
+`fetch`, and the index, which scans what a machine already holds and traces
+each file back to the models that made it. No `gen` adapter yet.
 
 ## Install
 
@@ -172,6 +173,94 @@ answers `403 error code: 1010`, which reads like a rejected credential and is
 not. The block is on `Python-urllib` specifically rather than on non-browser
 clients, so klin says what it is instead of claiming to be Chrome.
 
+## Index
+
+`fetch` answers where a model came from. The index answers the other half: what
+is already on this machine, and which of those models made it.
+
+```
+klin index build          # scan the roots, read what each file says about itself
+klin index status         # what the index holds
+klin ls --lora psx --since 2026-08-20
+klin ls --check           # exit non-zero if anything listed fails the ship gate
+klin show psx-final-B-iso-101
+```
+
+A generated image is usually self-describing. ComfyUI writes its whole graph
+into a PNG text chunk, so the base model, the LoRA stack with its strengths, the
+seed, the sampler settings and both prompts are in the file. Recovering that is
+a scan rather than an archaeology project, and it needs no dependency: chunk
+framing is a length, a type, a payload and a CRC.
+
+A reader walks the graph from the sampler backwards along its `model` input.
+Collecting every node whose class name contains `Lora` is the obvious shortcut
+and it is wrong twice over, because it loses the order the LoRAs were applied
+in and it counts loaders sitting in the graph wired to nothing.
+
+### The index is derived, the ledger is truth
+
+A ledger record is a committed statement about an asset, written once and
+reviewed by a person. The index is a cache of what a scan found, and deleting it
+costs nothing but a rebuild. That is why the database lives beside the cache and
+never in a repository: the rule that no weights and no raw generation output
+enter a game repo covers a table describing them just as much.
+
+It follows that **the licence verdict is computed at query time and never
+stored**, for the same reason `ship_ok` is absent from a ledger record. The
+index describes files that do not change, while the policy around them changes
+constantly, so a cached verdict would be wrong the first time somebody
+classified a licence by hand.
+
+### Machine-scoped, project-tagged
+
+One output directory serves every project on a machine. Splitting the index per
+project would scan the same files twice and answer "what else made this" with
+silence, so there is one database, and each row carries whichever project
+claimed its path.
+
+```yaml
+index:
+  roots:
+    - "D:/ComfyUI/output"
+  claim:
+    - "mock/*"
+```
+
+Roots are scanned; claim patterns say which of the results belong to this
+project. A file no project claims is indexed and counted, never dropped, because
+an unclaimed file is the normal state of a corpus that predates the index. Two
+projects claiming one path is reported as a conflict with the first claim left
+standing, since letting the last scan win would make the owner depend on running
+order.
+
+### Models resolve by identity, not by name
+
+Each model an image used is traced back to a ledger record through the weights
+tree, and the match is on filesystem identity: `st_dev` and `st_ino`. `fetch
+--as` hardlinks a cached file into that tree rather than copying it, so the
+tree's entry and the path in the ledger are one file under two names.
+
+Names cannot do this job. In the tree this was built against, fourteen of
+fourteen recorded models resolved by identity and **not one** had the same
+filename in both places, because the weights tree is exactly where files get
+renamed into something readable. Two of them were one file linked under two
+names, which a filename match would have reported as two different models. So a
+name match is still offered, and it is labelled as one wherever it is used.
+
+Where no record can be found, the item is marked `?` and reported as untraceable
+rather than passing:
+
+```
+SHIP  FILE                              SIZE       SEED   MODEL
+NO    psx-final-B-iso-101_00001_.png    640x368    101    flux1-dev-fp8 + ps1_style_flux_v1@0.7
+?     cd_Pv_Np_face_00001_.png          1024x1280  8043   z_image_base_bf16
+
+1 marked ? : a model klin cannot trace to a ledger record. That is not a pass.
+```
+
+Silence there would invert the meaning of the gate. A file whose origin is
+unknown is the case a ship gate exists to catch.
+
 ## Three decisions worth knowing about
 
 **The policy document stays authoritative.** A project's licence policy is
@@ -275,7 +364,10 @@ klin/                    the Python package
   fetch/                 vendor adapters, discovered rather than listed
     hf.py                huggingface.co
     civitai.py           civitai.com
-  cli.py                 fetch | gen | conform | ledger | secret
+  index/                 what is on this machine, and what made it
+    png.py               chunk framing, stdlib only
+    comfy.py             the graph a ComfyUI output carries about itself
+  cli.py                 fetch | gen | conform | ledger | secret | index
 plugin/                  the Claude Code plugin: skill and command
 tests/
 .claude-plugin/          the marketplace, so a second plugin is a directory
@@ -287,6 +379,10 @@ plugin and never a new repo. `fetch` enforces that by discovery: any module in
 `klin/fetch/` declaring `NAME` and `configure` becomes a subcommand, so vendor
 three is one new file and no edit to `cli.py`. There is a test that writes a
 module into the package and checks it appears.
+
+`index/` works the same way. A module there declaring `NAME` and `read` becomes
+a provenance reader, so teaching klin to recognise another generator's output is
+also one new file.
 
 ## Licence
 
