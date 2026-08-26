@@ -1,4 +1,5 @@
 import io
+import os
 
 import pytest
 
@@ -98,3 +99,45 @@ def test_a_missing_manifest_is_a_message_not_a_traceback(tmp_path):
     code = cli.main(["--repo", str(tmp_path), "ledger", "list"], stream=stream)
     assert code == 2
     assert "no manifest at" in stream.getvalue()
+
+
+# ------------------------------------------------------------ cache drift
+
+
+def test_drift_is_measured_against_the_cache_in_force(tmp_path):
+    """Not "do the files exist", which stays true through the whole failure."""
+    cache = str(tmp_path / "cache")
+    elsewhere = str(tmp_path / "somewhere-else" / "civitai" / "1" / "a.safetensors")
+    got = ledger.cache_drift([record("one", paths=[elsewhere])], cache)
+    assert got["recorded"] == 1
+    assert got["cache"] == os.path.normpath(cache)
+
+
+def test_one_file_under_the_cache_is_enough_to_settle_it(tmp_path):
+    cache = str(tmp_path / "cache")
+    inside = os.path.join(cache, "civitai", "1", "a.safetensors")
+    outside = str(tmp_path / "elsewhere" / "b.safetensors")
+    records = [record("one", paths=[inside]), record("two", paths=[outside])]
+    assert ledger.cache_drift(records, cache) is None
+
+
+def test_repo_relative_paths_are_not_evidence_either_way(tmp_path):
+    """A pack committed into the tree says nothing about where the cache is."""
+    records = [record("kaykit", paths=["game/assets/_vendor/kaykit/"])]
+    assert ledger.cache_drift(records, str(tmp_path / "cache")) is None
+
+
+def test_no_cache_configured_is_not_drift():
+    assert ledger.cache_drift([record("one", paths=["/abs/x"])], None) is None
+
+
+def test_the_audit_says_so_when_the_cache_has_drifted(repo, tmp_path, monkeypatch):
+    made = repo()
+    monkeypatch.setenv("KLIN_CACHE", str(tmp_path / "empty-cache"))
+    made.write_records(
+        [record("one", "CC0-1.0", paths=[str(tmp_path / "real" / "a.safetensors")])]
+    )
+    code, out = run(made, ["ledger", "audit"])
+    assert code == 0  # a note, never a failure
+    assert "none of the 1 recorded file(s) are under it" in out
+    assert "Set KLIN_CACHE" in out

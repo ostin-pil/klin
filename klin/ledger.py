@@ -146,6 +146,47 @@ def field(record, dotted):
     return node
 
 
+def cache_drift(records, cache):
+    """Whether the cache klin resolves to is the one the ledger was written in.
+
+    The failure this catches is silent by construction. `cache_dir` resolves
+    from an environment variable so that one committed manifest can describe
+    several machines, and a variable that was set when the files were fetched
+    and is unset now resolves somewhere else entirely. Nothing appears to
+    break: the records still point at real files, the audit still passes, and
+    the next fetch quietly re-downloads seventeen gigabytes into a second tree.
+    Barinn spent two sessions in that state, every weight under `D:/klin-cache`
+    and a manifest naming `%LOCALAPPDATA%/klin/cache`.
+
+    So the test cannot be "do the recorded files exist", which stays true
+    throughout. It is whether any of them live under the cache now in force.
+    Returns None when there is nothing to compare.
+    """
+    if not cache:
+        return None
+    absolute = []
+    for item in records:
+        for path in item.get("paths") or []:
+            if os.path.isabs(path):
+                absolute.append(path)
+    if not absolute:
+        return None
+
+    root = os.path.normcase(os.path.normpath(cache)) + os.sep
+    under = [
+        path
+        for path in absolute
+        if os.path.normcase(os.path.normpath(path)).startswith(root)
+    ]
+    if under:
+        return None
+    return {
+        "cache": os.path.normpath(cache),
+        "recorded": len(absolute),
+        "elsewhere": sorted(set(os.path.dirname(p) for p in absolute))[:3],
+    }
+
+
 def is_empty(value):
     if value is None:
         return True
