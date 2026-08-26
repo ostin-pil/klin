@@ -34,7 +34,7 @@ import re
 from urllib.parse import parse_qsl, urlsplit
 from urllib.request import Request, urlopen
 
-from .. import net
+from .. import net, spdx
 from . import (
     adopt,
     classify,
@@ -260,11 +260,28 @@ def run(args, ctx):
         if link:
             ctx.say("license_link: %s" % link)
 
-    if how == "unknown":
-        where, text = licence_text(repo_id, args.revision, payload, link)
+    # The terms are recorded whatever the classification turned out to be.
+    # Gating this on `unknown` tied the presence of a document to the outcome
+    # of a lookup, which are unrelated: passing `--families` to settle an
+    # OpenRAIL model by hand made klin stop recording the very text that
+    # justified the decision, and a rule requiring `licence.text` then failed
+    # the record for a file it had been holding one run earlier.
+    where, text = licence_text(repo_id, args.revision, payload, link)
+    if text:
+        record["licence"]["text"] = text
+        record["licence"]["url"] = where
+        ctx.say("licence text: %d characters from %s" % (len(text), where))
+
+    if not record["licence"]["text"]:
+        # A recognised identifier has exactly one text in SPDX's register, so
+        # recording what the register says it is amounts to a lookup. Reached
+        # only when the repository itself publishes no licence document, which
+        # is the ordinary case for a model card carrying a clean SPDX tag:
+        # neither Comfy-Org repository Barinn adopted ships a LICENSE file, and
+        # the terms were never in doubt, only somewhere else.
+        where, text = spdx.text(ident)
         if text:
             record["licence"]["text"] = text
-            record["licence"]["url"] = where
             ctx.say("licence text: %d characters from %s" % (len(text), where))
 
     report_classification(ctx, record, how, found)
