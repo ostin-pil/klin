@@ -158,9 +158,26 @@ def _applies(rule, ship):
 
 
 def _require(rule, records):
+    """Every listed field must be present on every record.
+
+    `unless_classified: true` narrows that to records whose licence klin could
+    not classify. The case it exists for is a rule demanding the licence text,
+    written because a storefront is not a licence and "Free" on itch.io is a
+    price. That reasoning is about terms nobody can look up, and it does not
+    reach `Apache-2.0`, where the identifier *is* the licence and the register
+    holds one text for it.
+
+    The narrowing is safe in the direction that matters, because it exempts
+    exactly the records klin was able to read and never the ones it could not.
+    A record whose licence is unclassified is precisely the one the rule was
+    written about, and it still has to carry its terms.
+    """
     findings = []
-    for name in rule.get("fields") or []:
-        for record in records:
+    skip_classified = bool(rule.get("unless_classified"))
+    for record in records:
+        if skip_classified and not (families(record) & set(UNSETTLED)):
+            continue
+        for name in rule.get("fields") or []:
             if ledger.is_empty(ledger.field(record, name)):
                 findings.append(
                     Finding(

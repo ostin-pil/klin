@@ -237,3 +237,57 @@ def test_a_clean_ledger_gains_no_coverage_finding(repo):
         [record("fine", "CC0-1.0")], rules, facts, ship=True
     )
     assert [f for f in findings if f.rule_id == "unclassified"] == []
+
+
+# ------------------------------------- narrowing a require rule to what klin
+# ------------------------------------- could not read for itself
+
+
+def _text_rule(**extra):
+    rule = {
+        "rule": 5,
+        "id": "storefront-is-not-a-licence",
+        "kind": "require",
+        "when": "ship",
+        "fields": ["licence.text"],
+        "text": 'A storefront is not a licence. "Free" on itch.io is a price.',
+    }
+    rule.update(extra)
+    return rule
+
+
+def test_require_still_catches_every_record_by_default():
+    item = record("bare", "Apache-2.0")
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule()], {}, ship=True)
+    assert [f.rule_id for f in findings if f.number == 5] == [
+        "storefront-is-not-a-licence"
+    ]
+
+
+def test_unless_classified_exempts_a_licence_klin_could_read():
+    """Apache-2.0 has one text in a public register, so demanding the document
+    is demanding something the identifier already settled."""
+    item = record("clean", "Apache-2.0")
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule(unless_classified=True)], {}, ship=True)
+    assert [f for f in findings if f.number == 5] == []
+
+
+def test_unless_classified_still_catches_what_klin_could_not_read():
+    """The record the rule was actually written about."""
+    item = record("murky", "LicenseRef-Some-Storefront")
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule(unless_classified=True)], {}, ship=True)
+    assert [f.rule_id for f in findings if f.number == 5] == [
+        "storefront-is-not-a-licence"
+    ]
+
+
+def test_unless_classified_still_catches_an_unlicensed_record():
+    item = record("bare", licence_id=None)
+    item["licence"]["text"] = None
+    findings = policy.evaluate([item], [_text_rule(unless_classified=True)], {}, ship=True)
+    assert [f.rule_id for f in findings if f.number == 5] == [
+        "storefront-is-not-a-licence"
+    ]
