@@ -38,6 +38,7 @@ from .. import net, spdx
 from . import (
     adopt,
     classify,
+    find_local,
     finish,
     link_into_models,
     record_for,
@@ -296,12 +297,20 @@ def run(args, ctx):
         ctx.say("  declared size: %s" % (size if size else "not published"))
         return 0
 
-    if args.adopt:
+    published = _declared_sha256(payload, filename)
+    here = args.adopt
+    if not here and not args.force:
+        here = find_local(ctx, size, published)
+        if here:
+            ctx.say("already on this machine, so nothing is downloaded:")
+            ctx.say("  %s" % here)
+
+    if here:
         facts = adopt(
             ctx,
-            args.adopt,
+            here,
             expected_size=size,
-            expected_sha256=_declared_sha256(payload, filename),
+            expected_sha256=published,
         )
         write_sidecar_beside(facts["path"], payload)
         record["source"]["mirror_of"] = url

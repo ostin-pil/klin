@@ -66,8 +66,9 @@ klin fetch civitai 980106 --as loras
 klin fetch civitai 1041229 --version 2499170 --as loras
 ```
 
-Each invocation resolves the vendor's metadata, classifies the licence, streams
-the file while computing its sha256, verifies it, writes a ledger record, and
+Each invocation resolves the vendor's metadata, classifies the licence, looks
+for the bytes on this machine before transferring any, streams the file while
+computing its sha256 where it has to, verifies it, writes a ledger record, and
 tells you to run `klin ledger audit`. Add `--dry-run` to stop after
 classification, which is the cheap way to see what a licence resolves to before
 committing to a download.
@@ -136,7 +137,7 @@ with it may be sold, so a model offering only those is treated as
 noncommercial. Records carry a `LicenseRef-` id, SPDX's own convention for terms
 that are not on its list.
 
-### Adopting a tree that predates klin
+### Adoption, which is what happens by default
 
 Every model directory predates the tool that would have recorded it. Barinn's
 held sixty-nine gigabytes across five base models, none of them fetched through
@@ -145,16 +146,43 @@ model behind a plate and then find no record to look up. Re-downloading all of
 it to learn what was already on the disk is not an answer, and hand-writing the
 records means inventing the licences.
 
+So a fetch looks before it transfers. Every one searches the weights tree and
+the cache for the bytes it is about to download, and adopts them where it finds
+them:
+
+```
+klin fetch hf Comfy-Org/z_image_turbo --file split_files/.../z_image_turbo_bf16.safetensors
+
+already on this machine, so nothing is downloaded:
+  D:\comfy-models\diffusion_models\z_image_turbo_bf16.safetensors
+sha256 matches the vendor's published hash
+recorded hf-Comfy-Org--z_image_turbo
+```
+
+That took thirty-three seconds instead of twelve gigabytes. The search is size
+first and hash second, because the vendor publishes a size and a stat over the
+tree reduces the candidates to a handful; hashing a whole tree to find one file
+would cost more than the download it saves.
+
+**A published hash is required for this to happen unattended.** A size match is
+not provenance: `sd_xl_base_1.0.safetensors` and
+`sd_xl_base_1.0_0.9vae.safetensors` are identical in length and are different
+models, so adopting on size would have recorded one as the other in silence.
+Where the vendor publishes no hash, klin downloads. `--force` downloads anyway.
+
+`--adopt PATH` names a file explicitly, which is the attended path and is
+allowed to proceed on size and header alone, because a person chose that file:
+
 ```
 klin fetch hf Comfy-Org/flux1-schnell --file flux1-schnell-fp8.safetensors \
     --adopt D:/comfy-models/checkpoints/flux1-schnell-fp8.safetensors
 ```
 
-Adoption is a fetch minus the transfer. The guards that make a downloaded file
-trustworthy are properties of the bytes and not of how they arrived: the size
-matches what the vendor publishes, the safetensors header parses, and the digest
-matches the vendor's own hash. Run against a local file they prove the same
-thing.
+Either way it is a fetch minus the transfer. The guards that make a downloaded
+file trustworthy are properties of the bytes and not of how they arrived: the
+size matches what the vendor publishes, the safetensors header parses, and the
+digest matches the vendor's own hash. Run against a local file they prove the
+same thing.
 
 So a mismatch is refused outright rather than noted, because a record is an
 assertion about provenance and writing one for a file that failed the vendor's

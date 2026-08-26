@@ -911,3 +911,70 @@ def test_the_hub_digest_is_read_under_either_spelling(key):
 def test_a_truncated_digest_is_not_offered_as_one():
     payload = {"siblings": [{"rfilename": "w.safetensors", "lfs": {"sha256": "abc"}}]}
     assert hf._declared_sha256(payload, "w.safetensors") is None
+
+
+# --------------------------------------------------------------------------
+# Adoption is the default: look before downloading.
+# --------------------------------------------------------------------------
+
+class FindCtx(Ctx):
+    def __init__(self, args, models=None, cache=None):
+        Ctx.__init__(self, args)
+        self._models = models
+        self._cache = cache
+
+    def models_dir(self):
+        return self._models
+
+    def cache_dir(self):
+        if self._cache is None:
+            raise manifest.ManifestError("no cache configured")
+        return self._cache
+
+
+def test_the_vendors_bytes_are_found_before_anything_is_downloaded(tmp_path):
+    tree = str(tmp_path / "models" / "loras")
+    path = a_safetensors(os.path.join(tree, "renamed_by_somebody.safetensors"))
+    ctx = FindCtx(Args(), models=str(tmp_path / "models"))
+    found = fetch.find_local(ctx, os.path.getsize(path), sha_of(path))
+    assert found == path
+
+
+def test_a_name_never_has_to_match(tmp_path):
+    """The whole point: a weights tree is where files get renamed."""
+    tree = str(tmp_path / "models")
+    path = a_safetensors(os.path.join(tree, "nothing", "like", "upstream.bin"))
+    ctx = FindCtx(Args(), models=tree)
+    assert fetch.find_local(ctx, os.path.getsize(path), sha_of(path)) == path
+
+
+def test_a_size_match_alone_is_never_enough(tmp_path):
+    """sd_xl_base_1.0 and sd_xl_base_1.0_0.9vae are the same length and are
+    different models. Adopting on size would record one as the other."""
+    tree = str(tmp_path / "models")
+    decoy = a_safetensors(os.path.join(tree, "decoy.safetensors"), body=b"\x01" * 64)
+    ctx = FindCtx(Args(), models=tree)
+    assert fetch.find_local(ctx, os.path.getsize(decoy), "f" * 64) is None
+    assert any("none has the vendor's hash" in line for line in ctx.lines)
+
+
+def test_no_published_hash_means_no_automatic_adoption(tmp_path):
+    """Unattended, klin may not guess. `--adopt` is the attended path."""
+    tree = str(tmp_path / "models")
+    path = a_safetensors(os.path.join(tree, "w.safetensors"))
+    ctx = FindCtx(Args(), models=tree)
+    assert fetch.find_local(ctx, os.path.getsize(path), None) is None
+
+
+def test_the_cache_is_searched_as_well_as_the_weights_tree(tmp_path):
+    """Which matters exactly when the cache has moved and the old copy is
+    still on disk under the previous root."""
+    cache = str(tmp_path / "old-cache")
+    path = a_safetensors(os.path.join(cache, "hf", "x", "w.safetensors"))
+    ctx = FindCtx(Args(), models=str(tmp_path / "empty"), cache=cache)
+    assert fetch.find_local(ctx, os.path.getsize(path), sha_of(path)) == path
+
+
+def test_no_configured_tree_is_not_an_error(tmp_path):
+    ctx = FindCtx(Args(), models=None)
+    assert fetch.find_local(ctx, 10, "a" * 64) is None

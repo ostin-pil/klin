@@ -213,6 +213,76 @@ def link_into_models(ctx, path, kind):
     return target
 
 
+def find_local(ctx, expected_size, expected_sha256):
+    """A file already on this machine whose bytes are the vendor's, or None.
+
+    Downloading something the machine already holds is the common case, not the
+    exceptional one: a model tree is usually older than the tool recording it,
+    and the same weight arrives under different names from different vendors.
+    So the search runs before every transfer rather than behind a flag.
+
+    **Size first, hash second.** The vendor publishes a size, so a stat over
+    the tree reduces tens of thousands of files to the handful that could
+    possibly be this one, and only those get read. Hashing a tree to find one
+    file would cost more than downloading it.
+
+    **A published hash is required.** A size match alone is not provenance:
+    `sd_xl_base_1.0.safetensors` and `sd_xl_base_1.0_0.9vae.safetensors` are
+    byte-identical in length and different models. Adopting on size would have
+    recorded one as the other, silently, and the record would have been false.
+    Explicit `--adopt` is allowed to proceed on size and header alone because a
+    person named that file; this runs unattended and may not guess.
+    """
+    if not expected_size or not expected_sha256:
+        return None
+
+    roots = []
+    for root in (ctx.models_dir(), _cache_root(ctx)):
+        if root and os.path.isdir(root) and root not in roots:
+            roots.append(root)
+    if not roots:
+        return None
+
+    candidates = []
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for filename in filenames:
+                path = os.path.join(dirpath, filename)
+                try:
+                    if os.path.getsize(path) == int(expected_size):
+                        candidates.append(path)
+                except OSError:
+                    continue
+    if not candidates:
+        return None
+
+    wanted = str(expected_sha256).lower()
+    for path in candidates:
+        digest = hashlib.sha256()
+        try:
+            with io.open(path, "rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(block)
+        except OSError:
+            continue
+        if digest.hexdigest() == wanted:
+            return path
+
+    ctx.say(
+        "note: %d file(s) here are the right size and none has the vendor's "
+        "hash, so this is a real download" % len(candidates)
+    )
+    return None
+
+
+def _cache_root(ctx):
+    try:
+        return ctx.cache_dir()
+    except Exception:
+        return None
+
+
 def adopt(ctx, path, expected_size=None, expected_sha256=None):
     """Record a file already on disk as the vendor's, transferring nothing.
 
