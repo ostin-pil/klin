@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 
 from ..index import comfy as reader
-from . import GenError, load_graph, posture
+from . import GenError, load_graph, posture, weights_in
 
 NAME = "comfy"
 HELP = "a local ComfyUI server (needs the workflow in API format)"
@@ -341,7 +341,7 @@ def queue(url, graph, out_dir, timeout=900, sleep=None):
 
 def run(args, ctx):
     graph = load_graph(args.workflow)
-    rows, findings, ok = posture(ctx, graph)
+    rows, findings, ok = posture(ctx, weights_in(graph))
 
     ctx.say("workflow %s" % args.workflow)
     for row in rows:
