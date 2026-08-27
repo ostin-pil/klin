@@ -586,14 +586,41 @@ def test_a_validator_reporting_only_warnings_passes(mesh, fake_blender, monkeypa
     assert "2 warning(s)" in out
 
 
-def test_a_validator_that_printed_nothing_readable_is_not_a_pass(tmp_path):
+def test_a_validator_that_printed_nothing_readable_is_not_a_pass(tmp_path,
+                                                                monkeypatch):
     """Unreadable is not clean, and reporting it as clean is the quiet failure."""
-    fake = tmp_path / "validator.py"
-    exe = tmp_path / "v.cmd"
-    exe.write_text("@echo off\r\necho not json\r\n")
+    class Done(object):
+        returncode = 1
+        stdout = "not json at all"
+        stderr = ""
+
+    monkeypatch.setattr(conform.subprocess, "run", lambda *a, **kw: Done())
     with pytest.raises(conform.ConformError) as exc:
-        conform.validate(str(tmp_path / "x.glb"), str(exe))
+        conform.validate(str(tmp_path / "x.glb"), "gltf_validator")
     assert "readable json" in str(exc.value)
+
+
+def test_a_validator_that_will_not_start_says_so_rather_than_passing(tmp_path,
+                                                                    monkeypatch):
+    def boom(*a, **kw):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(conform.subprocess, "run", boom)
+    with pytest.raises(conform.ConformError) as exc:
+        conform.validate(str(tmp_path / "x.glb"), "gltf_validator")
+    assert "could not run" in str(exc.value)
+
+
+def test_a_validator_that_answered_is_read_as_counts(tmp_path, monkeypatch):
+    class Done(object):
+        returncode = 0
+        stdout = json.dumps({"issues": {"numErrors": 2, "numWarnings": 1,
+                                        "messages": [{"code": "X"}]}})
+        stderr = ""
+
+    monkeypatch.setattr(conform.subprocess, "run", lambda *a, **kw: Done())
+    result = conform.validate(str(tmp_path / "x.glb"), "gltf_validator")
+    assert (result["errors"], result["warnings"]) == (2, 1)
 
 
 # ------------------------------------------------------- the staging discipline
