@@ -7,6 +7,7 @@
     klin secret set <name> | get <name> | list | rm <name> | doctor
     klin fetch <vendor> ...
     klin gen comfy --workflow <api.json> --prompt "..." [--check]
+    klin conform blender <mesh> --from <record> [--strict]
     klin index build [--rescan] [--prune] | status
     klin ls [--lora X] [--model X] [--seed N] [--since D] [--check]
     klin show <path fragment>
@@ -15,7 +16,8 @@
 the interface to the corpus, not to the scanner. Somebody browsing what they
 have should not have to know that a database is what makes it possible.
 
-Verbs are roles. Vendors arrive later as adapters under `fetch` and `gen`, and
+Verbs are roles. Vendors arrive later as adapters under `fetch`, `gen` and
+`conform`, and
 adding one must never require touching this file's structure. `fetch` keeps
 that promise by delegating: it asks `klin.fetch` for its subcommands, and that
 package discovers them from the modules present. Vendor three is a new file in
@@ -31,7 +33,8 @@ import re
 import sys
 import textwrap
 
-from . import fetch, gen, index, ledger, manifest, net, policy, render, secrets
+from . import conform, fetch, gen, index, ledger, manifest, net, policy, render
+from . import secrets
 
 WRAP = 78
 
@@ -699,6 +702,10 @@ def build_parser():
         verbs.add_parser("gen", help="produce an asset with a local generator")
     )
 
+    conform.configure(
+        verbs.add_parser("conform", help="re-pin a mesh onto the project's atlas")
+    )
+
     idx = verbs.add_parser("index", help="scan what is on this machine")
     scans = idx.add_subparsers(dest="action")
 
@@ -808,6 +815,7 @@ def main(argv=None, stream=None):
         net.NetError,
         fetch.FetchError,
         gen.GenError,
+        conform.ConformError,
         index.IndexingError,
     ) as exc:
         _out(stream, "klin: %s" % exc)
