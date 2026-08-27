@@ -114,6 +114,9 @@ def configure(parser):
                          help="triangle budget; 0 disables the gate")
         sub.add_argument("--allow-unknown-slots", action="store_true",
                          help="a slot naming no swatch warns instead of failing")
+        sub.add_argument("--map", dest="mapping", action="append", default=None,
+                         metavar="SLOT=SWATCH",
+                         help="which swatch a slot means; repeatable")
         module.configure(sub)
         sub.set_defaults(func=_run_adapter, module=module)
     return parser
@@ -228,6 +231,43 @@ def _atlas_path(ctx, table_path, atlas):
     return path
 
 
+def mapping(args, table):
+    """Which swatch each material slot means, for a mesh nobody here authored.
+
+    Conform was specified against slots already named after swatches, which is
+    true of a mesh authored for this project and false of every mesh bought
+    from anybody. A bought pack names its materials for what they look like,
+    `Wood` and `Metal` and `Fabric`, and no amount of walking the slots turns
+    those into a project's own vocabulary. The same document that specified the
+    naming also lists a CC0 tavern pack as needing re-pinning through this
+    verb, so both cases were always in scope and only one of them had a
+    mechanism.
+
+    A flag rather than a manifest key, because the mapping is a fact about one
+    pack rather than about the project, and a project may take props from
+    several. Matching is case-insensitive on the slot, since a pack that
+    writes `Wood` and a person who types `wood` mean the same thing and being
+    strict there buys nothing.
+    """
+    pairs = {}
+    for entry in args.mapping or []:
+        if "=" not in entry:
+            raise ConformError(
+                "--map wants SLOT=SWATCH, and %r has no '='" % entry)
+        slot, _, swatch = entry.partition("=")
+        slot, swatch = slot.strip(), swatch.strip()
+        if not slot or not swatch:
+            raise ConformError("--map wants SLOT=SWATCH, and %r is missing one" % entry)
+        if swatch not in table["swatches"]:
+            raise ConformError(
+                "--map names swatch %r, which is not in %s. It has: %s"
+                % (swatch, os.path.basename(table["source"]),
+                   ", ".join(sorted(table["swatches"])))
+            )
+        pairs[slot.lower()] = swatch
+    return pairs
+
+
 def budget(ctx, args):
     """The triangle ceiling: the flag, else the manifest, else none.
 
@@ -329,7 +369,10 @@ def check_slots(report, table, allow_unknown=False):
     for slot in report.get("slots") or []:
         if slot.get("swatch"):
             continue
-        text = "slot %r names no swatch in %s" % (slot.get("name"), table["source"])
+        text = ("slot %r names no swatch in %s; say which one it means with "
+                "--map %s=<swatch>"
+                % (slot.get("name"), os.path.basename(table["source"]),
+                   slot.get("name")))
         findings.append(_warn(text) if allow_unknown else _fail(text))
     return findings
 
