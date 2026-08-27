@@ -25,9 +25,10 @@ import subprocess
 import tempfile
 
 from . import (
-    ConformError, NOTE, budget, check_slots, check_triangles, check_uvs,
-    check_validator, finish, parse_report, posture, record_for,
-    report_findings, source_record, staging_dir, swatch_table, tool_path,
+    ConformError, NOTE, budget, check_atlas, check_slots, check_triangles,
+    check_uvs, check_validator, finish, parse_report, posture, record_for,
+    relink_atlas, report_findings, source_record, staging_dir, swatch_table,
+    tool_path,
 )
 
 NAME = "blender"
@@ -219,7 +220,17 @@ def run(args, ctx):
     ctx.say("%d triangle(s), %d slot(s)" % (
         report.get("triangles") or 0, len(report.get("slots") or [])))
 
+    # Before the gates, so what they judge is the file that will be staged
+    # rather than the one Blender happened to write. The landing directory is
+    # already known even though nothing has moved yet, which is what lets the
+    # atlas uri be written relative to where the file ends up.
+    uri = relink_atlas(produced, table["atlas"], out_dir)
+    if uri:
+        ctx.say("atlas    referenced as %s" % uri)
+    report["image_uri"] = uri
+
     findings = []
+    findings.extend(check_atlas(report, uri))
     findings.extend(check_slots(report, table, args.allow_unknown_slots))
     findings.extend(check_uvs(report, table))
     findings.extend(check_triangles(report, budget(ctx, args)))

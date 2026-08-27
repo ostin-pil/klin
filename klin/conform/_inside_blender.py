@@ -171,6 +171,21 @@ def pin(obj, table, flip_v):
     that looks deliberately wrong rather than one that stops the run.
     """
     mesh = obj.data
+    # Down to exactly one uv layer before anything is written. A mesh can carry
+    # several, only one of which is active, and pinning the active one leaves
+    # the others shipping the layout the mesh arrived with: a second TEXCOORD
+    # set in the exported file holding coordinates that point anywhere at all.
+    # Once every face is one texel a second set cannot mean anything, so the
+    # honest move is to drop them rather than to pin each in turn.
+    dropped = 0
+    while len(mesh.uv_layers) > 1:
+        for layer in list(mesh.uv_layers):
+            if layer is not mesh.uv_layers.active:
+                mesh.uv_layers.remove(layer)
+                dropped += 1
+                break
+    if dropped:
+        note("dropped %d extra uv layer(s) from %s" % (dropped, obj.name))
     if not mesh.uv_layers:
         mesh.uv_layers.new(name="UVMap")
     layer = mesh.uv_layers.active
@@ -269,12 +284,16 @@ def verify(path):
     seen = set()
     image_uri = None
     filtering = None
+    layers = 0
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or not obj.data.uv_layers:
             continue
-        layer = obj.data.uv_layers.active
-        for datum in layer.data:
-            seen.add((round(datum.uv[0], 6), round(1.0 - datum.uv[1], 6)))
+        # Every layer, not the active one. Reading only the active layer is how
+        # a stale second uv set survives a gate that was meant to catch it.
+        layers = max(layers, len(obj.data.uv_layers))
+        for layer in obj.data.uv_layers:
+            for datum in layer.data:
+                seen.add((round(datum.uv[0], 6), round(1.0 - datum.uv[1], 6)))
         for slot in obj.material_slots:
             material = slot.material
             if not material or not material.use_nodes:
@@ -284,7 +303,7 @@ def verify(path):
                     continue
                 image_uri = node.image.filepath or node.image.name
                 filtering = 9728 if node.interpolation == "Closest" else 9729
-    return sorted(seen), image_uri, filtering
+    return sorted(seen), image_uri, filtering, layers
 
 
 def main():
@@ -323,9 +342,9 @@ def main():
     vertices = sum(len(o.data.vertices) for o in objects)
     names = [o.name for o in objects]
 
-    measured, image_uri, filtering = ([], None, None)
+    measured, image_uri, filtering, layers = ([], None, None, 0)
     if payload.get("verify", True):
-        measured, image_uri, filtering = verify(payload["output"])
+        measured, image_uri, filtering, layers = verify(payload["output"])
 
     answer({
         "ok": True,
@@ -339,6 +358,7 @@ def main():
         "uvs_measured": [list(uv) for uv in measured],
         "image_uri": image_uri,
         "mag_filter": filtering,
+        "uv_layers": layers,
         "flip_v": flip_v,
         "warnings": warnings,
     })

@@ -50,9 +50,42 @@ REPORT = {
     "uvs_measured": [[0.4844, 0.0234], [0.6094, 0.0234]],
     "image_uri": "../assets/atlas.png",
     "mag_filter": 9728,
+    "uv_layers": 1,
     "flip_v": True,
     "warnings": [],
 }
+
+
+def glb(document=None, body=b"pad!"):
+    """A real glb container, because relink rewrites one rather than parsing text."""
+    import struct
+
+    document = document or {
+        "asset": {"version": "2.0"},
+        "images": [{"name": "atlas.png", "mimeType": "image/png", "bufferView": 0}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": len(body)}],
+        "buffers": [{"byteLength": len(body)}],
+    }
+    encoded = json.dumps(document).encode("utf-8")
+    encoded += b" " * ((4 - len(encoded) % 4) % 4)
+    body += b"0" * ((4 - len(body) % 4) % 4)
+    chunks = (struct.pack("<II", len(encoded), 0x4E4F534A) + encoded
+              + struct.pack("<II", len(body), 0x004E4942) + body)
+    return struct.pack("<III", 0x46546C67, 2, 12 + len(chunks)) + chunks
+
+
+def document_of(path):
+    import struct
+
+    raw = io.open(path, "rb").read()
+    offset, length = 12, struct.unpack("<III", io.open(path, "rb").read(12))[2]
+    while offset < length:
+        size, kind = struct.unpack("<II", raw[offset:offset + 8])
+        if kind == 0x4E4F534A:
+            return json.loads(raw[offset + 8:offset + 8 + size].decode("utf-8"))
+        offset += 8 + size
+    raise AssertionError("no json chunk")
+
 
 BANNER = "Blender 5.2.0 (hash 0123456789ab)\nRead prefs: userpref.blend\n"
 FAREWELL = "\nBlender quit\n"
@@ -125,7 +158,7 @@ def fake_blender(tmp_path, monkeypatch):
             job = json.loads(io.open(argv[-1], encoding="utf-8").read())
             self.job = job
             if self.writes is not False:
-                io.open(job["output"], "wb").write(self.writes or b"glTF-ish bytes")
+                io.open(job["output"], "wb").write(self.writes or glb())
             return self.code, self.stdout, self.stderr
 
     stub = Stub()
@@ -459,6 +492,53 @@ def test_zero_disables_the_budget_gate(mesh, fake_blender):
     made = mesh(conform={"max_triangles": 100})
     code, _ = conforming(made, fake_blender, "--max-tris", "0")
     assert code == 0
+
+
+# ------------------------------------------------------------------ the atlas
+
+
+def test_the_export_references_the_atlas_rather_than_carrying_a_copy(mesh,
+                                                                    fake_blender):
+    """An embedded copy is a private image, so a re-grade would leave it behind."""
+    made = mesh()
+    conforming(made, fake_blender)
+    image = document_of(
+        os.path.join(made.root, "assets", "_staging", "counter.glb"))["images"][0]
+    assert "bufferView" not in image
+    assert image["uri"] == "../atlas.png"
+
+
+def test_the_atlas_uri_resolves_from_where_the_file_lands(mesh, fake_blender):
+    """Blender writes to a temporary directory, so its own uri points nowhere."""
+    made = mesh()
+    conforming(made, fake_blender)
+    staged = os.path.join(made.root, "assets", "_staging", "counter.glb")
+    uri = document_of(staged)["images"][0]["uri"]
+    assert os.path.isfile(os.path.normpath(os.path.join(os.path.dirname(staged), uri)))
+
+
+def test_relink_leaves_a_file_with_no_images_alone(tmp_path):
+    path = tmp_path / "plain.glb"
+    path.write_bytes(glb({"asset": {"version": "2.0"}}))
+    before = path.read_bytes()
+    assert conform.relink_atlas(str(path), str(tmp_path / "a.png"), str(tmp_path)) is None
+    assert path.read_bytes() == before
+
+
+def test_relink_refuses_something_that_is_not_a_glb(tmp_path):
+    path = tmp_path / "no.glb"
+    path.write_bytes(b"this is not a glb at all")
+    with pytest.raises(conform.ConformError) as exc:
+        conform.relink_atlas(str(path), str(tmp_path / "a.png"), str(tmp_path))
+    assert "magic" in str(exc.value)
+
+
+def test_a_second_uv_layer_fails_because_it_ships_the_old_layout(mesh, fake_blender):
+    made = mesh()
+    fake_blender.stdout = said(_with(uv_layers=2))
+    code, out = conforming(made, fake_blender)
+    assert code == 1
+    assert "uv layers" in out
 
 
 # --------------------------------------------------------------- the validator

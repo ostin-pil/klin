@@ -406,6 +406,96 @@ def report_findings(ctx, findings):
     return not [f for f in findings if f["level"] == "fail"]
 
 
+# ----------------------------------------------------------------- the atlas
+
+
+#: glTF's container: a 12-byte header, then length-prefixed chunks. Only the
+#: json one is rewritten here, and only its `images` array.
+_JSON_CHUNK = 0x4E4F534A
+
+
+def _chunks(raw):
+    import struct
+
+    magic, version, length = struct.unpack("<III", raw[:12])
+    if magic != 0x46546C67:
+        raise ConformError("not a glb: bad magic")
+    out = []
+    offset = 12
+    while offset < length:
+        size, kind = struct.unpack("<II", raw[offset:offset + 8])
+        out.append([kind, raw[offset + 8:offset + 8 + size]])
+        offset += 8 + size
+    return out
+
+
+def relink_atlas(path, atlas, landing):
+    """Point the exported file at the shared atlas, by a path that will resolve.
+
+    Blender decides for itself how a texture leaves the exporter, and what it
+    decided here was both at once: a one-pixel placeholder embedded in a buffer
+    view *and* a uri, which the specification forbids, with the uri written
+    relative to the temporary directory the export happened in. Either half
+    alone is wrong for this. An embedded copy is a private image, so a project
+    that re-grades its one shared atlas would leave every conformed prop behind
+    on the old palette, which is the whole thing pinning to a texel exists to
+    prevent. A uri into a temporary directory resolves to nothing at all.
+
+    So klin fixes it afterwards rather than asking Blender more politely. The
+    invariant belongs to klin either way, and an exporter keyword that means
+    one thing this release and another next is exactly what should not be load
+    bearing.
+
+    Returns the uri written.
+    """
+    import struct
+
+    raw = io.open(path, "rb").read()
+    chunks = _chunks(raw)
+    index = [i for i, (kind, _) in enumerate(chunks) if kind == _JSON_CHUNK]
+    if not index:
+        raise ConformError("%s has no json chunk" % path)
+
+    document = json.loads(chunks[index[0]][1].decode("utf-8"))
+    images = document.get("images") or []
+    if not images:
+        return None
+
+    uri = os.path.relpath(atlas, landing).replace("\\", "/")
+    for image in images:
+        # Exactly one of the two, per the specification. The buffer view is
+        # dropped rather than the uri because the bytes it holds are a
+        # placeholder and the file on disk is the real atlas.
+        image.pop("bufferView", None)
+        image.pop("mimeType", None)
+        image["uri"] = uri
+
+    encoded = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    encoded += b" " * ((4 - len(encoded) % 4) % 4)
+    chunks[index[0]][1] = encoded
+
+    body = b""
+    for kind, payload in chunks:
+        body += struct.pack("<II", len(payload), kind) + payload
+    header = struct.pack("<III", 0x46546C67, 2, 12 + len(body))
+    io.open(path, "wb").write(header + body)
+    return uri
+
+
+def check_atlas(report, uri):
+    """The exported file references the atlas rather than carrying a copy."""
+    findings = []
+    if uri is None:
+        findings.append(_warn("the export carries no image at all"))
+    layers = report.get("uv_layers")
+    if layers and layers > 1:
+        findings.append(_fail(
+            "%d uv layers came back, and only one can be the pinned one; the "
+            "others ship the layout the mesh arrived with" % layers
+        ))
+    return findings
+
+
 # --------------------------------------------------------------- the validator
 
 
