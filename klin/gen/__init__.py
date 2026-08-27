@@ -142,8 +142,13 @@ def weights_in(graph):
     return found
 
 
-def posture(ctx, graph):
-    """What the project's policy says about the models this graph would use.
+def posture(ctx, used_weights):
+    """What the project's policy says about the models a run would use.
+
+    Takes `(name, role)` pairs rather than a graph. Only one generator in the
+    world describes its work as a node graph, and asking the rest to invent one
+    to reach this would be the tail wagging the dog; what every generator can
+    say is which weights it is about to load.
 
     Returns `(rows, findings, ok)`. `ok` is false when a rule fails or when a
     weight cannot be traced, because an untraceable model is exactly the case a
@@ -160,7 +165,7 @@ def posture(ctx, graph):
     rows = []
     used = []
     ok = True
-    for name, role in weights_in(graph):
+    for name, role in used_weights:
         entry = index.lookup(models, name)
         record = by_id.get(entry["record"]) if entry and entry.get("record") else None
         if record is None:

@@ -33,8 +33,15 @@ Homepage = "https://github.com/ostin-pil/klin"
 [project.scripts]
 klin = "klin.cli:main"
 
-[tool.setuptools]
-packages = ["klin"]
+# Found rather than listed. `packages = ["klin"]` shipped a wheel holding the
+# nine top-level modules and none of the four subpackages, so an installed klin
+# raised ImportError on `from . import fetch` before it could print anything.
+# A list that silently drops a package is the failure this had already produced
+# once, and 76ede35 fixed it by hand before e9d493d reverted that on a reading
+# taken from a stale build/ tree. Discovery cannot go stale the same way, and a
+# new subpackage needs no edit here, which is the same promise adapters make.
+[tool.setuptools.packages.find]
+include = ["klin*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

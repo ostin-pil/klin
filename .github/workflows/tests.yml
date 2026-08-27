@@ -34,3 +34,47 @@ jobs:
         run: pip install . pytest
       - name: Run the suite
         run: python -m pytest tests -q
+
+  # A wheel that drops a subpackage passes every test above, because the suite
+  # imports the source tree and never the archive. That is not hypothetical:
+  # `packages = ["klin"]` shipped a wheel of nine modules and no subpackages
+  # for several releases, so an installed klin raised ImportError on startup
+  # while CI stayed green. A stale build/ directory is what hid it, because
+  # bdist_wheel zips build/lib wholesale and an earlier build had left the
+  # subpackages there. Hence the clean checkout and the explicit rm.
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build a wheel from a clean tree
+        run: |
+          rm -rf build dist
+          pip install build
+          python -m build --wheel
+      - name: Every package and the script Blender runs must be in it
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          names = set(zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist())
+          need = [
+              "klin/cli.py",
+              "klin/conform/__init__.py",
+              "klin/conform/blender.py",
+              "klin/conform/_inside_blender.py",
+              "klin/fetch/__init__.py",
+              "klin/gen/__init__.py",
+              "klin/index/__init__.py",
+          ]
+          missing = [n for n in need if n not in names]
+          if missing:
+              print("missing from the wheel: %s" % ", ".join(missing))
+              sys.exit(1)
+          print("wheel carries all %d required files" % len(need))
+          PY
+      - name: An installed klin must start
+        run: |
+          pip install dist/*.whl
+          cd /tmp && klin --help > /dev/null && echo "klin starts from an install"

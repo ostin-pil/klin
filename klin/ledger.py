@@ -48,6 +48,13 @@ def blank(record_id, kind="mesh"):
             "adapter": "manual",
             "url": None,
             "mirror_of": None,
+            # Which record this one was made from, when it is a derivative. A
+            # conformed mesh is not the same bytes as its source, which is what
+            # `mirror_of` asserts, so it needs a field of its own. Deliberately
+            # not in `sanitise`'s tuple below: this holds a record id and never
+            # a URL, and scrubbing it would be a no-op today and a corruption
+            # the day an id contains a question mark.
+            "derived_from": None,
             "retrieved": None,
             "upstream_version": None,
         },
