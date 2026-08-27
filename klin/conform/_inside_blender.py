@@ -123,14 +123,27 @@ def meshes(names):
     return found
 
 
-def swatch_of(slot_name, table):
-    """Which swatch a material slot names, ignoring Blender's collision suffix."""
+def swatch_of(slot_name, table, slot_map=None):
+    """Which swatch a material slot means.
+
+    Three ways, in order. An explicit mapping wins, because somebody looked at
+    the pack and said so. Otherwise the slot's own name, which is the case for
+    a mesh authored against this project's vocabulary. Blender's collision
+    suffix is stripped either way: it appends `.001` when a name repeats and
+    glTF import carries source names in, so a mesh with two `wood_mid` slots
+    arrives with one of them renamed and would otherwise read as unknown.
+    """
     if not slot_name:
         return None
-    if slot_name in table:
-        return slot_name
+    slot_map = slot_map or {}
     stripped = SUFFIX.sub("", slot_name)
-    return stripped if stripped in table else None
+    for candidate in (slot_name, stripped):
+        if candidate.lower() in slot_map:
+            return slot_map[candidate.lower()]
+    for candidate in (slot_name, stripped):
+        if candidate in table:
+            return candidate
+    return None
 
 
 def atlas_material(name, image_path, filtering):
@@ -162,7 +175,7 @@ def atlas_material(name, image_path, filtering):
     return material
 
 
-def pin(obj, table, flip_v):
+def pin(obj, table, flip_v, slot_map=None):
     """Set every loop uv of every face to the texel its slot names.
 
     Reads `polygon.material_index`, so this must run before the slots are
@@ -193,7 +206,7 @@ def pin(obj, table, flip_v):
     by_index = []
     for slot in obj.material_slots:
         name = slot.material.name if slot.material else None
-        by_index.append((name, swatch_of(name, table)))
+        by_index.append((name, swatch_of(name, table, slot_map)))
 
     counts = {}
     pinned = {}
@@ -310,6 +323,10 @@ def main():
     payload = json.loads(open(job_path(), encoding="utf-8").read())
     table = dict((name, tuple(uv)) for name, uv in payload["swatches"].items())
     flip_v = bool(payload.get("flip_v", True))
+    slot_map = payload.get("slot_map") or {}
+    if slot_map:
+        note("slot map: %s" % ", ".join(
+            "%s to %s" % (k, v) for k, v in sorted(slot_map.items())))
 
     load(payload["source"])
     objects = meshes(payload.get("objects"))
@@ -324,7 +341,7 @@ def main():
     slots = []
     pinned = {}
     for obj in objects:
-        by_index, counts, got = pin(obj, table, flip_v)
+        by_index, counts, got = pin(obj, table, flip_v, slot_map)
         pinned.update(got)
         for name, swatch in by_index:
             slots.append({

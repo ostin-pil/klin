@@ -380,6 +380,21 @@ colour would stay behind on the old palette, so the export is made to reference
 the shared atlas rather than to embed a copy of it, and that is checked rather
 than hoped for.
 
+### A pack does not know your vocabulary
+
+Slots named after swatches is the case where somebody authored the mesh for
+this project. A pack bought from anybody names its materials for what they look
+like, `Wood` and `Metal` and `Fabric`, so the mapping has to be supplied:
+
+```
+klin conform blender bar.glb --map Wood=wood_mid --map Metal=iron
+```
+
+Without one, the slot gate refuses and names the flag and the slot it wants,
+because a mesh half re-pinned is worse than one that stopped. The mapping is a
+flag rather than a manifest key: it is a fact about one pack, and a project may
+take props from several.
+
 klin holds no opinion about which swatches exist or how many triangles is too
 many. The table is the project's file and the budget is the project's number,
 both named in its manifest:

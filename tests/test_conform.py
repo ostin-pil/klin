@@ -494,6 +494,60 @@ def test_zero_disables_the_budget_gate(mesh, fake_blender):
     assert code == 0
 
 
+# -------------------------------------------------------------- the slot map
+
+
+def test_a_bought_pack_names_its_slots_for_what_they_look_like(mesh, fake_blender):
+    """The case the spec assumed away: nobody here chose these names."""
+    made = mesh()
+    fake_blender.stdout = said(_with(slots=[
+        {"object": "Bar", "name": "Wood", "swatch": None, "polygons": 84}]))
+    code, out = conforming(made, fake_blender)
+    assert code == 1
+    assert "--map Wood=<swatch>" in out
+
+
+def test_a_mapping_reaches_the_conformer(mesh, fake_blender):
+    made = mesh()
+    conforming(made, fake_blender, "--map", "Wood=wood_mid", "--map", "Metal=iron")
+    assert fake_blender.job["slot_map"] == {"wood": "wood_mid", "metal": "iron"}
+
+
+def test_a_mapping_onto_a_swatch_that_does_not_exist_lists_the_ones_that_do(
+        mesh, fake_blender):
+    made = mesh()
+    code, out = conforming(made, fake_blender, "--map", "Wood=mahogany")
+    assert code == 2
+    assert "wood_mid" in out and "iron" in out
+
+
+def test_a_mapping_with_no_equals_says_what_the_shape_is(mesh, fake_blender):
+    made = mesh()
+    code, out = conforming(made, fake_blender, "--map", "Wood")
+    assert code == 2
+    assert "SLOT=SWATCH" in out
+
+
+def test_a_mapping_missing_a_half_is_refused(mesh, fake_blender):
+    made = mesh()
+    code, out = conforming(made, fake_blender, "--map", "Wood=")
+    assert code == 2
+    assert "SLOT=SWATCH" in out
+
+
+def test_the_slot_side_is_matched_without_regard_to_case(mesh, fake_blender):
+    """A pack that writes Wood and a person who types wood mean the same thing."""
+    made = mesh()
+    conforming(made, fake_blender, "--map", "WOOD=wood_mid")
+    assert fake_blender.job["slot_map"] == {"wood": "wood_mid"}
+
+
+def test_no_mapping_leaves_the_job_with_an_empty_one(mesh, fake_blender):
+    made = mesh()
+    conforming(made, fake_blender)
+    assert fake_blender.job["slot_map"] == {}
+
+
 # ------------------------------------------------------------------ the atlas
 
 

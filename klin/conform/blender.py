@@ -26,7 +26,8 @@ import tempfile
 
 from . import (
     ConformError, NOTE, budget, check_atlas, check_slots, check_triangles,
-    check_uvs, check_validator, finish, parse_report, posture, record_for,
+    check_uvs, check_validator, finish, mapping, parse_report, posture,
+    record_for,
     relink_atlas, report_findings, source_record, staging_dir, swatch_table,
     tool_path,
 )
@@ -120,7 +121,7 @@ def output_name(args, source):
     return "%s.glb" % stem
 
 
-def job(args, table, source, output):
+def job(args, table, source, output, slots=None):
     """Everything the script inside Blender needs, resolved.
 
     The whole swatch table travels rather than a path to it, because resolving
@@ -135,6 +136,7 @@ def job(args, table, source, output):
         "atlas": table["atlas"],
         "swatches": dict((name, list(uv)) for name, uv in table["swatches"].items()),
         "material_name": "klin_atlas",
+        "slot_map": dict(slots or {}),
         "objects": list(args.objects or []),
         # glTF puts the UV origin at the top left and Blender at the bottom
         # left, so a coordinate measured in one space needs flipping to be
@@ -198,7 +200,7 @@ def run(args, ctx):
     work = tempfile.mkdtemp(prefix="klin-conform-")
     staged = os.path.join(out_dir, output_name(args, source))
     produced = os.path.join(work, output_name(args, source))
-    payload = job(args, table, source, produced)
+    payload = job(args, table, source, produced, mapping(args, table))
     job_file = os.path.join(work, "job.json")
     io.open(job_file, "w", encoding="utf-8", newline="\n").write(
         json.dumps(payload, indent=2, sort_keys=True))
