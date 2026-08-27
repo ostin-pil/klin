@@ -17,8 +17,9 @@ v0.1. The ledger, the policy engine and the renderer came first, because the
 shared core is the reason this is one repo rather than several, so it exists
 before anything depends on it. On top of it sit two vendor adapters under
 `fetch`, the index, which scans what a machine already holds and traces each
-file back to the models that made it, and `gen`, which checks a workflow's
-licence posture before the GPU starts. No `conform` verb yet.
+file back to the models that made it, `gen`, which checks a workflow's licence
+posture before the GPU starts, and `conform`, which turns a mesh somebody else
+authored into one a project can ship.
 
 ## Install
 
@@ -323,6 +324,115 @@ An unused LoRA slot is zeroed rather than unwired, because rewiring a graph by
 hand is where a sweep quietly starts producing something other than what its
 record says it produced.
 
+### TRELLIS.2, and a licence that turns on one import
+
+```
+klin gen trellis --patch check
+klin gen trellis --image stove.png --out meshes/
+```
+
+TRELLIS.2 lifts an image into a mesh. Its own code and its weights are MIT, and
+the non-commercial part is two optional NVIDIA dependencies reached through a
+single module-scope import, which loads them on every run whether or not
+anything wants what they do. A project that discards generated textures never
+wants the texture bake they serve, and was loading them anyway.
+
+So this adapter also patches the install: the import moves into the bake block
+that uses it, and a `bake_texture=False` exit returns geometry, normals and uvs
+above it. Generation and the patch live together because splitting them would
+leave a generator whose licence status depended on a step somebody remembered
+to run.
+
+The proof that a run touched none of it is a removal rather than a reading,
+since a transitive import three modules deep does not appear in a diff. The
+harness takes the restricted modules out of the import system for the whole
+process and generates anyway, so a mesh coming out the other side is the
+evidence. It refuses the imports rather than stubbing them, because a stub
+would let the pipeline believe it had a rasterizer and leave open what it did
+with it.
+
+Two conditions travel with the result. The clean path is the non-default
+argument, so this makes a clean path available rather than making the tool
+clean by default. And the install is not a git repository, so a reinstall
+reverts the patch silently, which is why `--patch check` exists and why
+applying it twice is safe.
+
+## Conform
+
+A mesh from anywhere becomes a project's own by pointing its uvs at the
+project's texture atlas.
+
+```
+klin conform blender counter.blend --from battleroach-tavern
+```
+
+That is a narrower operation than it sounds, and the narrowness is the useful
+part. A project whose atlas is a grid of flat colour swatches does not author
+a texture per asset; it points each material at one texel. So conforming is
+setting every loop of every face whose slot is named `wood_mid` to the single
+coordinate that names the wood_mid cell, then collapsing the slots into one
+shared material and triangulating. A mesh from any source comes out
+style-native and nobody painted anything.
+
+Pinning to a coordinate rather than to a colour is what lets a project re-grade
+every asset at once by editing one image. An asset carrying its own baked
+colour would stay behind on the old palette, so the export is made to reference
+the shared atlas rather than to embed a copy of it, and that is checked rather
+than hoped for.
+
+klin holds no opinion about which swatches exist or how many triangles is too
+many. The table is the project's file and the budget is the project's number,
+both named in its manifest:
+
+```yaml
+staging_dir: assets/_staging
+conform:
+  swatches: assets/swatches.json
+  max_triangles: 900
+  blender: "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe"
+  gltf_validator: null
+```
+
+### What is checked, and where it lands
+
+Blender writes to a temporary file. klin runs every gate against that file and
+moves it into `staging_dir` only once they all pass, so a file that failed one
+is never something a later step can pick up by mistake. Four gates: every
+material slot names a swatch the table knows, every uv in the exported file is
+one of the texels it was meant to be, the triangle count is inside the
+project's budget, and the Khronos validator has nothing to report.
+
+The uv gate is a measurement rather than an argument. glTF puts the uv origin
+at the top left and Blender at the bottom left, so a pin that looks right in
+the scene can be upside down in the file, and both look equally clean from
+inside Blender. The conformer therefore re-imports what it just exported and
+reports the coordinates that actually shipped. They are compared as a set,
+because collapsing the slots leaves a re-imported mesh with nothing to say
+which face used to be which slot, and because the set is the stronger claim
+anyway: it catches a uv that never moved, one that moved to the wrong cell,
+and a whole layout written inverted.
+
+The validator is the one soft gate. It is a separate binary that many machines
+will not have, so its absence is loud, reaches the record as a sentence, and
+becomes a failure under `--strict`.
+
+Geometry checks live in the verb and not in the rule engine. Every rule kind in
+`policy.py` is a pure function of records, which is why an audit runs on a
+checkout holding no assets at all. A triangle budget would have to open a file
+or keep a second copy of a number that already exists in one, and a second copy
+of a measured number is its own kind of bug.
+
+### The record it writes
+
+A conformed asset is a derivative, so its licence is its source's, copied whole
+from the record named by `--from` rather than invented. `source.derived_from`
+holds that record's id. With no `--from` the licence stays empty and klin says
+so, because a conform that quietly wrote one would be inventing provenance.
+
+A re-conform keeps what a person wrote. `notes`, `used_for`, `reviewed_at` and
+any hand-written modifications survive; only the fields a machine owns are
+replaced.
+
 ## Index
 
 `fetch` answers where a model came from. The index answers the other half: what
@@ -584,6 +694,11 @@ klin/                    the Python package
     civitai.py           civitai.com
   gen/                   generators, discovered rather than listed
     comfy.py             a local ComfyUI, patched by role
+    trellis.py           TRELLIS.2, and the patch that keeps it clean
+    _inside_trellis.py   runs in TRELLIS's interpreter, never in klin's
+  conform/               conformers, discovered rather than listed
+    blender.py           headless Blender
+    _inside_blender.py   runs in Blender's interpreter, never in klin's
   index/                 what is on this machine, and what made it
     png.py               chunk framing, stdlib only
     comfy.py             the graph a ComfyUI output carries about itself
