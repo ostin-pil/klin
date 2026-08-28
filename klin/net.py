@@ -323,6 +323,22 @@ def download(
     }
 
 
+def get_text(url, token=None, timeout=60):
+    """Fetch a text document (a feed, a server-rendered page) as a string.
+
+    Same honest User-Agent as everything else here: the Civitai episode
+    established that an identifiable client outlives a disguised one.
+    """
+    request = Request(url, headers=_headers(token), method="GET")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise _describe_http_error(exc, url)
+    except URLError as exc:
+        raise NetError("could not reach %s: %s" % (_host(url), exc.reason))
+
+
 def get_json(url, token=None, timeout=60):
     """Fetch and parse a vendor metadata document."""
     request = Request(url, headers=_headers(token), method="GET")

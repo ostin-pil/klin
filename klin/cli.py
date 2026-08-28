@@ -33,7 +33,7 @@ import re
 import sys
 import textwrap
 
-from . import conform, fetch, gen, index, ledger, manifest, net, policy, render
+from . import conform, fetch, find, gen, index, ledger, manifest, net, policy, render
 from . import secrets
 
 WRAP = 78
@@ -724,6 +724,10 @@ def build_parser():
         verbs.add_parser("fetch", help="acquire an asset from a vendor")
     )
 
+    find.configure(
+        verbs.add_parser("find", help="browse a vendor's public catalogue, no browser")
+    )
+
     gen.configure(
         verbs.add_parser("gen", help="produce an asset with a local generator")
     )
@@ -840,6 +844,7 @@ def main(argv=None, stream=None):
         secrets.SecretError,
         net.NetError,
         fetch.FetchError,
+        find.FindError,
         gen.GenError,
         conform.ConformError,
         index.IndexingError,
