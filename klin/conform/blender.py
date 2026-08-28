@@ -29,7 +29,7 @@ from . import (
     check_uvs, check_validator, finish, mapping, parse_report, posture,
     record_for,
     relink_atlas, report_findings, source_record, staging_dir, swatch_table,
-    tool_path,
+    tool_path, validation_stage,
 )
 
 NAME = "blender"
@@ -237,7 +237,14 @@ def run(args, ctx):
     findings.extend(check_uvs(report, table))
     findings.extend(check_triangles(report, budget(ctx, args)))
     validator = tool_path(args, "validator", VALIDATOR_ENV, "gltf_validator", block)
-    checked, result = check_validator(ctx, args, produced, validator)
+    # The copy, not the original: the uri points at where the file will land,
+    # so in the working directory it resolves to nothing and the validator
+    # reports an error klin caused. validation_stage gives the same bytes the
+    # context they will really have.
+    to_validate = produced
+    if validator and uri:
+        to_validate = validation_stage(produced, uri, table["atlas"])
+    checked, result = check_validator(ctx, args, to_validate, validator)
     findings.extend(checked)
 
     if not report_findings(ctx, findings):

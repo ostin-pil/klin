@@ -677,6 +677,58 @@ def test_a_validator_that_answered_is_read_as_counts(tmp_path, monkeypatch):
     assert (result["errors"], result["warnings"]) == (2, 1)
 
 
+def test_the_confirmed_command_line_asks_for_json_on_stdout(tmp_path, monkeypatch):
+    """The Khronos binary prints a human summary unless -o asks for json.
+
+    The first run against a real install found this; every earlier test
+    stubbed one level too high to. The command line is pinned here so a
+    refactor cannot quietly drop the flag and resurrect the failure.
+    """
+    seen = {}
+
+    class Done(object):
+        returncode = 0
+        stdout = json.dumps({"issues": {"numErrors": 0, "numWarnings": 0,
+                                        "messages": []}})
+        stderr = ""
+
+    def run(argv, **kw):
+        seen["argv"] = argv
+        return Done()
+
+    monkeypatch.setattr(conform.subprocess, "run", run)
+    conform.validate(str(tmp_path / "x.glb"), "gltf_validator")
+    assert seen["argv"][1] == "-o"
+
+
+def test_validation_stage_places_the_atlas_where_the_uri_points(tmp_path):
+    """The produced file's uri aims at the staging directory, so validating it
+    where it was born reports an error klin manufactured itself. The stage is
+    a copy with the atlas bytes at the spot the uri names."""
+    produced = tmp_path / "work" / "counter.glb"
+    os.makedirs(str(produced.parent))
+    produced.write_bytes(b"glTF-bytes")
+    atlas = tmp_path / "atlas.png"
+    atlas.write_bytes(b"atlas-bytes")
+
+    copy = conform.validation_stage(
+        str(produced), "../_vendor/pack/atlas.png", str(atlas))
+
+    assert copy != str(produced)
+    assert io.open(copy, "rb").read() == b"glTF-bytes"
+    target = os.path.normpath(
+        os.path.join(os.path.dirname(copy), "../_vendor/pack/atlas.png"))
+    assert io.open(target, "rb").read() == b"atlas-bytes"
+    # and the whole arrangement stays inside the working directory
+    assert os.path.abspath(target).startswith(str(tmp_path / "work"))
+
+
+def test_validation_stage_without_a_uri_is_the_file_itself(tmp_path):
+    produced = tmp_path / "counter.glb"
+    produced.write_bytes(b"x")
+    assert conform.validation_stage(str(produced), None, "unused") == str(produced)
+
+
 # ------------------------------------------------------- the staging discipline
 
 
