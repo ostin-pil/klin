@@ -44,6 +44,7 @@ import io
 import json
 import os
 import pkgutil
+import shutil
 import subprocess
 import time
 
@@ -548,11 +549,14 @@ def validate(path, executable):
     Isolated in one function on purpose. The validator is a third-party binary
     whose command line and json shape are not klin's to define, so confirming
     them against a real install should be a change to this function and to
-    nothing else.
+    nothing else. It was: the Khronos binary prints a human summary to stdout
+    and writes its json to `<file>.report.json` unless `-o` asks for stdout,
+    which the first run against a real install (2026-08-28) discovered and the
+    stubbed tests could not have. `-o` is the confirmed command line.
     """
     try:
         proc = subprocess.run(
-            [executable, path],
+            [executable, "-o", path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except OSError as exc:
@@ -575,6 +579,46 @@ def validate(path, executable):
         "warnings": int(issues.get("numWarnings") or 0),
         "messages": issues.get("messages") or [],
     }
+
+
+def validation_stage(produced, uri, atlas):
+    """A copy of the produced file, placed so its atlas uri actually resolves.
+
+    The produced file's uri is written relative to where the file will land
+    after the gates pass, deliberately, and the gates run while it still sits
+    in a temporary directory — so validating it in place reports the one
+    error klin manufactured itself: `Resource not found (../atlas.png)`. The
+    honest fix is neither validating the pre-relink file (that tests
+    Blender's output, not what ships) nor filtering the error (that teaches
+    the gate to ignore exactly the kind of thing it exists to catch). It is
+    giving the bytes the context they will really have: copy the file into a
+    nested directory deep enough that the uri's parent-hops stay inside it,
+    and put the atlas bytes at the spot the uri names. The copy lives beside
+    the produced file and is left behind with the rest of the working
+    directory, so a failure message pointing at it stays inspectable.
+
+    Returns the path to validate. With no uri there is nothing to resolve and
+    the produced file is already the right thing to validate.
+    """
+    if not uri:
+        return produced
+    parts = uri.replace("\\", "/").split("/")
+    ups = 0
+    for part in parts:
+        if part != os.pardir:
+            break
+        ups += 1
+    base = os.path.join(os.path.dirname(produced), "validate")
+    spot = os.path.join(base, *(["deep"] * ups)) if ups else base
+    if not os.path.isdir(spot):
+        os.makedirs(spot)
+    copy = os.path.join(spot, os.path.basename(produced))
+    shutil.copyfile(produced, copy)
+    target = os.path.normpath(os.path.join(spot, *parts))
+    if not os.path.isdir(os.path.dirname(target)):
+        os.makedirs(os.path.dirname(target))
+    shutil.copyfile(atlas, target)
+    return copy
 
 
 def check_validator(ctx, args, path, executable):
