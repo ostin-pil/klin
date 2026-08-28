@@ -65,6 +65,8 @@ jobs:
               "klin/conform/blender.py",
               "klin/conform/_inside_blender.py",
               "klin/fetch/__init__.py",
+              "klin/find/__init__.py",
+              "klin/find/itch.py",
               "klin/gen/__init__.py",
               "klin/index/__init__.py",
           ]
