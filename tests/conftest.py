@@ -153,6 +153,19 @@ class Repo(object):
 
 
 @pytest.fixture(autouse=True)
+def never_the_real_cache(monkeypatch):
+    """The developer's machine may name a real cache; the tests must not see it.
+
+    `cache_dir` resolves the environment before the manifest, so a KLIN_CACHE
+    set at the user level would leak into every fixture repo and make drift
+    behaviour depend on whose machine the suite runs on. The suite happened to
+    pass with the variable set when this guard was added — luck, not design.
+    A test that wants a cache sets one explicitly.
+    """
+    monkeypatch.delenv("KLIN_CACHE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def never_a_real_vault(monkeypatch):
     """Belt and braces.
 
