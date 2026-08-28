@@ -292,6 +292,14 @@ def cmd_index_status(args, stream):
     got = index.status(conn)
     _out(stream, "klin index: %s" % index.db_path(data))
     _out(stream)
+    # The same note the ledger audit prints, for the same silent failure. The
+    # index lives beside the cache, so a shell missing the cache variable
+    # resolves a different index — usually a fresh, empty one — and without
+    # this note `status` reports 0 items with a straight face while the built
+    # index sits in the tree the variable used to name. `status` is exactly
+    # the command the docs say to trust over any written-down count, which
+    # made its silence here worse than the audit's would have been.
+    _report_drift(stream, data, _records(args, data))
     _out(
         stream,
         "%d item(s) | %d with provenance | %d unclaimed | %d distinct workflow(s)"
@@ -360,6 +368,24 @@ def cmd_ls(args, stream):
     rows = index.query(conn, **_filters(args))
     if not rows:
         _out(stream, "nothing in the index matches. `klin index status` shows what is.")
+        # A claim name is matched exactly, and from the outside a case miss is
+        # indistinguishable from an empty index. The audit that asked for this
+        # typed `--project barinn` against a claim named `Barinn` and read the
+        # empty answer as the truth about the corpus.
+        if args.project:
+            near = [
+                name
+                for name, _ in index.status(conn)["projects"]
+                if name
+                and name.lower() == str(args.project).lower()
+                and name != args.project
+            ]
+            if near:
+                _out(
+                    stream,
+                    "project names match exactly: the index has %s, not '%s'."
+                    % (", ".join("'%s'" % n for n in near), args.project),
+                )
         return 0
 
     models, records = _resolver(args, data)

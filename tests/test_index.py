@@ -573,3 +573,63 @@ def test_show_says_when_nothing_matches(repo, tmp_path):
     code, out = run(made, ["show", "no-such-thing"])
     assert code == 2
     assert "nothing in the index matches" in out
+
+
+def test_status_prints_the_drift_note_the_audit_prints(repo, tmp_path, monkeypatch):
+    """The index lives beside the cache, so a shell missing the cache variable
+    reads a different, usually empty, index. The audit already said so when the
+    cache drifted; `status` — the command told to be trusted over any
+    written-down count — used to report 0 items with a straight face."""
+    made = repo()
+    made.write_records(
+        [record("one", "CC0-1.0", paths=[str(tmp_path / "real" / "a.safetensors")])]
+    )
+    monkeypatch.setenv("KLIN_CACHE", str(tmp_path / "empty-cache"))
+    code, out = run(made, ["index", "status"])
+    assert code == 0
+    assert "none of the 1 recorded file(s) are under it" in out
+    assert "Set KLIN_CACHE" in out
+
+
+def test_status_stays_quiet_when_the_cache_is_the_recorded_one(
+    repo, tmp_path, monkeypatch
+):
+    made = repo()
+    cache = tmp_path / "cache"
+    made.write_records(
+        [record("one", "CC0-1.0", paths=[str(cache / "a.safetensors")])]
+    )
+    monkeypatch.setenv("KLIN_CACHE", str(cache))
+    code, out = run(made, ["index", "status"])
+    assert code == 0
+    assert "Set KLIN_CACHE" not in out
+
+
+def test_ls_hints_when_the_project_misses_only_by_case(repo, tmp_path):
+    """A claim is matched exactly, and a case miss looks identical to an empty
+    index from the outside — `--project barinn` against a claim named `Barinn`
+    read as an empty corpus once. A genuinely unknown name earns no hint."""
+    made = repo()
+    text = io.open(made.manifest, encoding="utf-8").read()
+    text = text.replace(
+        "stage: prototype",
+        'stage: prototype\n\nindex:\n  claim:\n    - "*.png"',
+    )
+    io.open(made.manifest, "w", encoding="utf-8").write(text)
+    root = str(tmp_path / "out")
+    write_generated(os.path.join(root, "one.png"))
+    run(made, ["index", "build", "--root", root])
+
+    code, out = run(made, ["ls", "--project", "Fixture"])
+    assert code == 0
+    assert "one.png" in out
+
+    code, out = run(made, ["ls", "--project", "fixture"])
+    assert code == 0
+    assert "nothing in the index matches" in out
+    assert "the index has 'Fixture', not 'fixture'" in out
+
+    code, out = run(made, ["ls", "--project", "nothere"])
+    assert code == 0
+    assert "nothing in the index matches" in out
+    assert "match exactly" not in out
