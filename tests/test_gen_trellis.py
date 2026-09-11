@@ -294,7 +294,11 @@ def test_the_generator_reaches_the_same_licence_check_as_a_node_graph(repo, inst
     monkeypatch.setattr(trellis.subprocess, "run", _never)
     code, out = run(made, ["gen", "trellis", "--install", root,
                            "--image", __file__, "--dry-run"])
-    assert "trellis2-1024_cascade" in out
+    # The checkpoint, which is what a ledger could hold a record of. The tier
+    # is a run parameter and asking the ledger about it produced an
+    # untraceable model every time, for no reason but the name.
+    assert trellis.MODEL in out
+    assert "1024_cascade" not in out.split("checkpoint")[0]
 
 
 def test_both_generators_are_discovered():

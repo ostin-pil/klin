@@ -54,6 +54,11 @@ HELP = "TRELLIS.2 image-to-mesh, geometry only (needs its own python)"
 INSTALL_ENV = "TRELLIS_INSTALL"
 PYTHON_ENV = "TRELLIS_PYTHON"
 
+#: The checkpoint every tier loads. The tier (`--tier`) is a run parameter that
+#: picks the resolution cascade; it is not a second model, and naming it as one
+#: made the licence pre-flight ask about a checkpoint that does not exist.
+MODEL = "microsoft/TRELLIS.2-4B"
+
 #: Every copy of the exporter, most important first. site-packages is the one
 #: that runs; the others keep a reinstall or a rebuild from quietly undoing it.
 TARGETS = (
@@ -160,7 +165,9 @@ def configure(parser):
     parser.add_argument("--out", default=None, help="where the glb goes")
     parser.add_argument("--name", default=None, help="the output's stem")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--tier", default="1024_cascade")
+    parser.add_argument("--tier", default="1024_cascade",
+                        help="the resolution cascade, not a checkpoint")
+    parser.add_argument("--model", default=MODEL, help="the checkpoint to load")
     parser.add_argument("--install", default=None, help="the TRELLIS.2 install")
     parser.add_argument("--python", dest="interpreter", default=None,
                         help="the interpreter inside that install")
@@ -314,14 +321,19 @@ def script_path():
     return path
 
 
-def weights(tier):
+def weights(model):
     """What a run loads, as `(name, role)`, for the pre-flight.
 
     TRELLIS names one model and no LoRAs, which is the whole of its stack. The
     pair shape is what `gen.posture` takes, so a generator with no node graph
     reaches the same licence check as one that has.
+
+    It is the checkpoint that goes in here and not the tier. The two were
+    conflated until session 13, which asked the ledger about `trellis2-1024_cascade`
+    — a name nothing has ever been recorded under, so the pre-flight reported an
+    untraceable model for a reason that was its own doing.
     """
-    return [("trellis2-%s" % tier, "checkpoint")]
+    return [(model, "checkpoint")]
 
 
 def run(args, ctx):
@@ -337,7 +349,7 @@ def run(args, ctx):
     if not os.path.isfile(image):
         raise GenError("no image at %s" % image)
 
-    rows, findings, ok = posture(ctx, weights(args.tier))
+    rows, findings, ok = posture(ctx, weights(args.model))
     for row in rows:
         ctx.say("  %-28s %-11s %s" % (
             row["name"], row["role"], row.get("record") or "(no record)"))
@@ -376,6 +388,7 @@ def run(args, ctx):
         "output": os.path.join(out_dir, "%s.glb" % name),
         "seed": args.seed,
         "tier": args.tier,
+        "model": args.model,
         "mode": "textured" if args.textured else "geometry",
     }
     argv = [exe, script_path(), json.dumps(job)]
@@ -407,9 +420,15 @@ def run(args, ctx):
 
     ctx.say("")
     ctx.say("%s" % report["glb"])
-    ctx.say("%d faces, %d vertices, %.1f s" % (
-        report.get("faces") or 0, report.get("vertices") or 0,
-        report.get("seconds") or 0.0))
+    ctx.say("%d faces, %d vertices" % (
+        report.get("faces") or 0, report.get("vertices") or 0))
+    # Named boundaries rather than one number, because the generation benchmark
+    # records them separately and a blended total is not comparable with what
+    # it holds.
+    ctx.say("%.1f s in the pipeline, %.1f s exporting, %.2f GB peak" % (
+        report.get("pipeline_seconds") or 0.0,
+        report.get("export_seconds") or 0.0,
+        report.get("peak_vram_gb") or 0.0))
     if job["mode"] == "geometry":
         blocked = report.get("restricted_loaded") or []
         if blocked:
