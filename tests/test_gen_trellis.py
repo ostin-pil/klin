@@ -340,8 +340,8 @@ def test_asking_for_the_network_out_loud_clears_the_offline_switches(repo, insta
     assert "online" in out
 
 
-def test_both_generators_are_discovered():
-    assert set(gen.adapters()) == {"comfy", "trellis"}
+def test_every_generator_is_discovered():
+    assert set(gen.adapters()) == {"comfy", "hi3dgen", "trellis"}
 
 
 def test_the_harness_for_the_other_interpreter_ships_but_is_not_a_subcommand():
