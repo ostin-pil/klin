@@ -175,7 +175,24 @@ def configure(parser):
                         help="inspect or change the install's geometry-only patch")
     parser.add_argument("--textured", action="store_true",
                         help="bake a texture, which loads the restricted code")
+    parser.add_argument("--online", action="store_true",
+                        help="let the run reach Hugging Face, for a first fetch")
     return parser
+
+
+#: What a run is not allowed to do quietly. `from_pretrained` resolves the
+#: pipeline config and every model through `hf_hub_download`, so a run with a
+#: warm cache still sends HEAD requests to huggingface.co and silently takes
+#: whatever is on the other end. That is how the Hi3DGen environment broke in
+#: Barinn's session 36: nothing was pinned, two of five runtime fetches had
+#: moved, and the failure looked like a code bug. Offline by default makes the
+#: cache the thing that is running, and `--online` is how a first fetch is
+#: asked for out loud.
+OFFLINE_ENV = {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+}
 
 
 # ------------------------------------------------------------------- the patch
@@ -392,18 +409,26 @@ def run(args, ctx):
         "mode": "textured" if args.textured else "geometry",
     }
     argv = [exe, script_path(), json.dumps(job)]
+    env = dict(os.environ)
+    if args.online:
+        for key in OFFLINE_ENV:
+            env.pop(key, None)
+    else:
+        env.update(OFFLINE_ENV)
 
     if args.dry_run:
         ctx.say("")
         ctx.say("dry run: nothing generated")
-        ctx.say("would run %s" % " ".join(argv[:2]))
+        ctx.say("would run %s (%s)" % (
+            " ".join(argv[:2]), "online" if args.online else "offline"))
         ctx.say(json.dumps(job, indent=2, sort_keys=True))
         return 0
 
     ctx.say("")
-    ctx.say("running %s (%s)" % (os.path.basename(exe), job["mode"]))
+    ctx.say("running %s (%s, %s)" % (
+        os.path.basename(exe), job["mode"], "online" if args.online else "offline"))
     proc = subprocess.run(argv, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace", env=env)
     report = None
     for line in (proc.stdout or "").splitlines():
         if line.startswith("TRELLIS "):
