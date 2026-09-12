@@ -113,10 +113,40 @@ def spawn(argv):
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def is_directory(out):
+    """Whether `--out` names a directory, including one that does not exist yet.
+
+    `os.path.isdir` cannot answer this for a path nobody has created, and
+    guessing "file" was the wrong guess: `--out D:/bench/round18` then meant a
+    file called `round18` in `D:/bench`, and the export failed inside Blender
+    with a path error naming neither. The extension is the discriminator,
+    because the only file this verb ever writes is a `.glb`, and a trailing
+    separator settles the rest.
+    """
+    if out.endswith(("/", "\\")):
+        return True
+    if os.path.isdir(out):
+        return True
+    return os.path.splitext(out)[1].lower() != ".glb"
+
+
 def output_name(args, source):
-    """What the conformed file is called: the source's stem, as glTF binary."""
-    if args.out and not os.path.isdir(args.out):
+    """What the conformed file is called: the id if there is one, as glTF binary.
+
+    The id comes first because it is the name the asset actually has here, and
+    the source basename is an accident of how a vendor packaged their download.
+    A pack that ships one `bar.obj` holding a counter and a stool is conformed
+    twice with two ids, and naming both files after the source silently staged
+    the second over the first: two records, one file, and the first record
+    pointing at the second's geometry.
+
+    An explicit `--out` naming a file still wins over both, because somebody who
+    named the output meant it.
+    """
+    if args.out and not is_directory(args.out):
         return os.path.basename(args.out)
+    if args.record_id:
+        return "%s.glb" % args.record_id
     stem = os.path.splitext(os.path.basename(source))[0]
     return "%s.glb" % stem
 
@@ -186,12 +216,18 @@ def run(args, ctx):
     exe = executable(args, ctx, block)
     script = script_path()
 
-    if args.out and os.path.isdir(args.out):
+    if args.out and is_directory(args.out):
         out_dir = os.path.abspath(args.out)
     elif args.out:
         out_dir = os.path.dirname(os.path.abspath(args.out)) or os.getcwd()
     else:
         out_dir = staging_dir(ctx)
+
+    # Created here rather than left to the exporter. Blender fails on a missing
+    # directory from inside the subprocess, where the error names the temporary
+    # working path and not the `--out` the caller actually gave.
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
 
     # Blender writes to a temporary file and klin moves it into staging only
     # once every gate has passed, so the promise that nothing unvalidated

@@ -28,10 +28,23 @@ import os
 import sys
 import time
 
+# Set before torch is imported anywhere, which is why it sits at module scope
+# rather than beside the import that needs it. The install's own scripts set
+# it too: without it the 1024 cascade fragments the allocator and a run that
+# fits can still fail on a large prop.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 PREFIX = "TRELLIS "
 NOTE = "trellis-note: "
 
 BLOCKED = ("nvdiffrast", "nvdiffrec", "nvdiffrec_render")
+
+#: What `to_glb` is allowed to keep. The install's own batch script uses this
+#: number, so a mesh out of klin is the same mesh rounds 14 and 16 measured.
+#: It is not a triangle budget for the game: TRELLIS.2's exports are a hollow
+#: double skin and do not decimate below about 900 to 2,700 triangles without
+#: being rebuilt first, which is a step that belongs downstream of generating.
+DECIMATION_TARGET = 200000
 
 
 def note(text):
@@ -118,38 +131,121 @@ def verify(path):
     return facts
 
 
-def generate(job, blocker):
+def install_triton_shim():
+    """The shim the install's own `run_batch.py` carries.
+
+    Nothing to do with licensing: without it the pipeline fails on this
+    machine's `flex_gemm` build, which has no triton kernels compiled in. It is
+    installed only when the attribute is genuinely absent, so a build that has
+    them keeps them.
+    """
+    import types
+
+    import torch
+    import flex_gemm.kernels as kernels
+
+    if hasattr(kernels, "triton"):
+        return
+    module = types.ModuleType("flex_gemm.kernels.triton")
+
+    def fwd(feats, indices, weight):
+        idx = indices.long().clamp_(0, feats.shape[0] - 1)
+        return (feats[idx] * weight.to(feats.dtype).unsqueeze(-1)).sum(1)
+
+    def bwd(go, indices, weight, count):
+        channels = go.shape[-1]
+        idx = indices.long().clamp(0, count - 1).reshape(-1)
+        contrib = (go.unsqueeze(1) * weight.to(go.dtype).unsqueeze(-1)).reshape(-1, channels)
+        return torch.zeros(
+            (count, channels), device=go.device, dtype=go.dtype
+        ).index_add_(0, idx, contrib)
+
+    module.indice_weighed_sum_fwd = fwd
+    module.indice_weighed_sum_bwd_input = bwd
+    kernels.triton = module
+    note("triton shim installed")
+
+
+def generate(job):
+    """Load, run, export. The three steps are timed apart, on purpose.
+
+    The boundaries are the ones round 14 measured and the generation benchmark
+    records, so a number out of this adapter is comparable with the numbers
+    already in the plan:
+
+    - `pipeline_seconds` covers `pipeline.run` alone, after a peak-memory reset
+      that puts model loading outside the measurement;
+    - `export_seconds` covers the simplify and the `to_glb`;
+    - `peak_vram_gb` is decimal GB, not GiB, read after that same reset.
+
+    Reporting one end-to-end number instead would not be wrong, but it would
+    not be the number the plan holds, and a comparison across the two would
+    quietly be against different things.
+    """
     import torch
     from PIL import Image
 
-    sys.path.insert(0, job["install"])
-    from o_voxel.pipelines import OVoxelImageTo3DPipeline
+    # trellis2 and o_voxel are imported from the install directory rather than
+    # pip-installed, which is why the install's own scripts only run from
+    # inside it.
+    if job["install"] not in sys.path:
+        sys.path.insert(0, job["install"])
 
-    note("loading the pipeline")
-    pipeline = OVoxelImageTo3DPipeline.from_pretrained(job.get("tier"))
+    from trellis2.pipelines import Trellis2ImageTo3DPipeline
+    import o_voxel
+
+    install_triton_shim()
+
+    note("loading %s" % job["model"])
+    pipeline = Trellis2ImageTo3DPipeline.from_pretrained(job["model"])
     pipeline.cuda()
 
     image = Image.open(job["image"])
+    torch.cuda.reset_peak_memory_stats()
     started = time.time()
-    outputs = pipeline.run(image, seed=job["seed"])
-    mesh = outputs["mesh"][0]
+    # The tier is a run parameter and not a checkpoint: one model serves every
+    # tier, and `pipeline_type` chooses the resolution cascade.
+    mesh = pipeline.run(image, seed=job["seed"], pipeline_type=job["tier"])[0]
+    pipeline_seconds = time.time() - started
+    peak = torch.cuda.max_memory_allocated() / 1e9
 
     note("exporting %s" % job["mode"])
-    glb = mesh.to_glb(bake_texture=(job["mode"] == "textured"))
-    glb.export(job["output"])
-    seconds = time.time() - started
+    export_started = time.time()
+    # 16777216 is the install's own ceiling: high enough to be no cut at this
+    # resolution, and required because `to_glb` reads a simplified mesh.
+    mesh.simplify(16777216)
+    glb = o_voxel.postprocess.to_glb(
+        vertices=mesh.vertices,
+        faces=mesh.faces,
+        attr_volume=mesh.attrs,
+        coords=mesh.coords,
+        attr_layout=mesh.layout,
+        voxel_size=mesh.voxel_size,
+        aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+        decimation_target=DECIMATION_TARGET,
+        texture_size=2048,
+        bake_texture=(job["mode"] == "textured"),
+        remesh=True,
+        remesh_band=1,
+        remesh_project=0,
+        verbose=False,
+    )
+    export_seconds = time.time() - export_started
 
-    peak = None
-    if torch.cuda.is_available():
-        peak = torch.cuda.max_memory_allocated() / float(1 << 30)
-    return seconds, peak
+    glb.export(job["output"], extension_webp=True)
+    return {
+        "pipeline_seconds": round(pipeline_seconds, 1),
+        "export_seconds": round(export_seconds, 1),
+        "seconds": round(pipeline_seconds + export_seconds, 1),
+        "peak_vram_gb": round(peak, 2),
+    }
 
 
 def main():
     job = json.loads(sys.argv[1])
     blocker = guard() if job["mode"] == "geometry" else None
 
-    seconds, peak = generate(job, blocker)
+    timings = generate(job)
     facts = verify(job["output"])
 
     payload = {
@@ -159,13 +255,13 @@ def main():
         "mode": job["mode"],
         "seed": job["seed"],
         "tier": job["tier"],
-        "seconds": round(seconds, 1),
-        "peak_vram_gb": round(peak, 2) if peak is not None else None,
+        "model": job["model"],
         "restricted_loaded": sorted(
             m for m in sys.modules if m.split(".")[0] in BLOCKED),
         "restricted_attempts": blocker.attempts if blocker else None,
         "restricted_blocked": blocker is not None,
     }
+    payload.update(timings)
     payload.update(facts)
     # A patch that made the tool clean by making it useless would pass every
     # check above and fail the project, so the output has to be plausible too.

@@ -294,11 +294,54 @@ def test_the_generator_reaches_the_same_licence_check_as_a_node_graph(repo, inst
     monkeypatch.setattr(trellis.subprocess, "run", _never)
     code, out = run(made, ["gen", "trellis", "--install", root,
                            "--image", __file__, "--dry-run"])
-    assert "trellis2-1024_cascade" in out
+    # The checkpoint, which is what a ledger could hold a record of. The tier
+    # is a run parameter and asking the ledger about it produced an
+    # untraceable model every time, for no reason but the name.
+    assert trellis.MODEL in out
+    assert "1024_cascade" not in out.split("checkpoint")[0]
 
 
-def test_both_generators_are_discovered():
-    assert set(gen.adapters()) == {"comfy", "trellis"}
+def test_a_run_is_offline_unless_it_is_asked_to_reach_the_network(repo, install,
+                                                                 monkeypatch):
+    """`from_pretrained` resolves every model through `hf_hub_download`.
+
+    So a warm cache is not the same as no network: the run still sends HEAD
+    requests and takes whatever answers them. Barinn's session 36 lost a day
+    to that shape in the Hi3DGen environment, where nothing was pinned and two
+    of five runtime fetches had moved.
+    """
+    made = repo()
+    root = install()
+    run(made, ["gen", "trellis", "--install", root, "--patch", "apply"])
+    seen = _capture(0, "TRELLIS " + json.dumps(_REPORT), "")
+    monkeypatch.setattr(trellis.subprocess, "run", seen)
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__])
+    assert code == 0
+    assert seen.env["HF_HUB_OFFLINE"] == "1"
+    assert seen.env["TRANSFORMERS_OFFLINE"] == "1"
+    assert "offline" in out
+
+
+def test_asking_for_the_network_out_loud_clears_the_offline_switches(repo, install,
+                                                                    monkeypatch):
+    """A first fetch has to be possible, and has to be visible in the output."""
+    made = repo()
+    root = install()
+    run(made, ["gen", "trellis", "--install", root, "--patch", "apply"])
+    # Set on the machine, so clearing it is a real removal rather than an
+    # absence that would have looked the same either way.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    seen = _capture(0, "TRELLIS " + json.dumps(_REPORT), "")
+    monkeypatch.setattr(trellis.subprocess, "run", seen)
+    code, out = run(made, ["gen", "trellis", "--install", root,
+                           "--image", __file__, "--online"])
+    assert code == 0
+    assert "HF_HUB_OFFLINE" not in seen.env
+    assert "online" in out
+
+
+def test_every_generator_is_discovered():
+    assert set(gen.adapters()) == {"comfy", "hi3dgen", "trellis"}
 
 
 def test_the_harness_for_the_other_interpreter_ships_but_is_not_a_subcommand():
@@ -327,6 +370,29 @@ _REPORT = {
 
 def _never(*a, **kw):
     raise AssertionError("nothing should have been started")
+
+
+def _capture(code, out, err):
+    """Like `_proc`, but keeps the environment the subprocess was handed.
+
+    What the run is allowed to reach is part of what it proves, so it is
+    asserted rather than read off the machine that happens to run the suite.
+    """
+
+    class Done(object):
+        returncode = code
+        stdout = out
+        stderr = err
+
+    class Call(object):
+        env = None
+
+        def __call__(self, *a, **kw):
+            Call.env = kw.get("env")
+            return Done()
+
+    call = Call()
+    return call
 
 
 def _proc(code, out, err):
