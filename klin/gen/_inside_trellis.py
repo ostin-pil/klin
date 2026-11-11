@@ -39,6 +39,10 @@ NOTE = "trellis-note: "
 
 BLOCKED = ("nvdiffrast", "nvdiffrec", "nvdiffrec_render")
 
+#: The remover the stock `pipeline.json` names, for the report. It is
+#: briaai's RMBG-2.0, whose weights are CC BY-NC 4.0, and it is never loaded.
+STOCK_REMOVER = "briaai/RMBG-2.0"
+
 #: What `to_glb` is allowed to keep. The install's own batch script uses this
 #: number, so a mesh out of klin is the same mesh rounds 14 and 16 measured.
 #: It is not a triangle budget for the game: TRELLIS.2's exports are a hollow
@@ -57,6 +61,141 @@ def answer(payload):
 
 class BlockedImport(ImportError):
     pass
+
+
+class RemoverRefused(RuntimeError):
+    pass
+
+
+class Remover(object):
+    """The background remover this run uses, which is never the install's.
+
+    TRELLIS.2 removes the background of any input that has no alpha of its
+    own, and its `pipeline.json` builds the remover from `briaai/RMBG-2.0`,
+    whose weights are CC BY-NC 4.0. So the geometry path that carried no NVIDIA
+    code still ran a non-commercial model over every opaque image. Blocking an
+    import could not have caught it, because nothing restricted is imported:
+    the restricted part is weights, loaded through the same `transformers`
+    call as any other.
+
+    Changing the name the pipeline asks for is not enough either. The wrapper
+    in the stableprojectorz install loads a local `MODELS/RMBG-2.0` whenever
+    one exists and ignores `model_name`, and that install keeps one there. So
+    the wrapper class is replaced outright and this one is built instead.
+
+    With a directory, this loads that BiRefNet and does what the wrapper did.
+    Without one it loads nothing and refuses when called, which is the same
+    choice the import blocker makes: a stub that quietly returned the image
+    would leave open what masked it, and a refusal leaves nothing open.
+    """
+
+    def __init__(self, path, record):
+        self.record = record
+        self.model = None
+        record["loaded"] = None
+        record["called"] = False
+        if path:
+            self.model = load_birefnet(path)
+            record["loaded"] = path
+
+    def to(self, device):
+        if self.model is not None:
+            self.model.to(device)
+
+    def cuda(self):
+        if self.model is not None:
+            self.model.cuda()
+
+    def cpu(self):
+        if self.model is not None:
+            self.model.cpu()
+
+    def __call__(self, image):
+        self.record["called"] = True
+        if self.model is None:
+            raise RemoverRefused(
+                "this image has no alpha of its own, so TRELLIS.2 would remove "
+                "its background with %s, which is CC BY-NC 4.0. Pass --rembg "
+                "with a BiRefNet directory whose licence the project accepts, "
+                "or hand it an image that is already masked"
+                % self.record.get("configured", STOCK_REMOVER))
+        import torch
+        from torchvision import transforms
+
+        size = image.size
+        transform = transforms.Compose([
+            transforms.Resize((1024, 1024)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        weight = next(self.model.parameters())
+        batch = transform(image.convert("RGB")).unsqueeze(0).to(
+            device=weight.device, dtype=weight.dtype)
+        with torch.no_grad():
+            preds = self.model(batch)[-1].sigmoid().float().cpu()
+        mask = transforms.ToPILImage()(preds[0].squeeze()).resize(size)
+        image.putalpha(mask)
+        return image
+
+
+def load_birefnet(path):
+    """Build a BiRefNet from its own directory's code, and load its weights strictly.
+
+    Not `AutoModelForImageSegmentation.from_pretrained`, which is what the
+    install's wrapper calls: under this install's transformers (4.57) it ties
+    weights through `config.get_text_config`, and BiRefNet's own `Config`
+    has no `is_encoder_decoder`, so upstream's code does not load at all. The
+    install's RMBG-2.0 copy carries a fix for that, but it is briaai's file,
+    and borrowing it would bring back the licence this replaces. So the class
+    comes from the directory being loaded, the weights go in by name, and a
+    single missing or unexpected key refuses: a partial load masks images
+    with a network that is partly random, and the masks look plausible.
+    """
+    from safetensors.torch import load_file
+    from transformers import AutoConfig
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+    config = AutoConfig.from_pretrained(path, trust_remote_code=True,
+                                        local_files_only=True)
+    model_class = get_class_from_dynamic_module("birefnet.BiRefNet", path,
+                                                local_files_only=True)
+    model = model_class(bb_pretrained=False, config=config)
+    result = model.load_state_dict(
+        load_file(os.path.join(path, "model.safetensors")), strict=False)
+    if result.missing_keys or result.unexpected_keys:
+        raise RemoverRefused(
+            "the remover at %s did not load cleanly: %d missing and %d "
+            "unexpected keys" % (path, len(result.missing_keys),
+                                 len(result.unexpected_keys)))
+    return model.eval()
+
+
+def guard_remover(job, rembg, record):
+    """Replace the install's remover class before `from_pretrained` looks it up.
+
+    The pipeline finds it with `getattr(rembg, name)`, so the module attribute
+    is the one seam, and `BiRefNet` is the only class the package exports.
+    Whatever name it is asked for, the remover is the one klin was given,
+    because the wrapper being replaced ignores the name anyway. A config that
+    named some other class would slip past this, which is why `confirm_remover`
+    checks what the pipeline actually holds once it is built.
+    """
+    def build(model_name=STOCK_REMOVER, **kwargs):
+        record["configured"] = model_name
+        return Remover(job.get("rembg"), record)
+
+    rembg.BiRefNet = build
+    return build
+
+
+def confirm_remover(pipeline):
+    """Refuse a pipeline whose remover klin did not build."""
+    held = getattr(pipeline, "rembg_model", None)
+    if held is not None and not isinstance(held, Remover):
+        raise RemoverRefused(
+            "the pipeline built its background remover as %s, which klin did "
+            "not replace, so what it would load is unknown"
+            % type(held).__name__)
 
 
 class Blocker(importlib.abc.MetaPathFinder):
@@ -191,13 +330,16 @@ def generate(job):
     if job["install"] not in sys.path:
         sys.path.insert(0, job["install"])
 
-    from trellis2.pipelines import Trellis2ImageTo3DPipeline
+    from trellis2.pipelines import Trellis2ImageTo3DPipeline, rembg
     import o_voxel
 
     install_triton_shim()
+    remover = {}
+    guard_remover(job, rembg, remover)
 
     note("loading %s" % job["model"])
     pipeline = Trellis2ImageTo3DPipeline.from_pretrained(job["model"])
+    confirm_remover(pipeline)
     pipeline.cuda()
 
     image = Image.open(job["image"])
@@ -238,6 +380,7 @@ def generate(job):
         "export_seconds": round(export_seconds, 1),
         "seconds": round(pipeline_seconds + export_seconds, 1),
         "peak_vram_gb": round(peak, 2),
+        "remover": remover,
     }
 
 

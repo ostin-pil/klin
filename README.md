@@ -357,6 +357,34 @@ clean by default. And the install is not a git repository, so a reinstall
 reverts the patch silently, which is why `--patch check` exists and why
 applying it twice is safe.
 
+### The remover, which no import blocker could see
+
+```
+klin gen trellis --image stove.png --rembg D:/klin-cache/hi3dgen/weights/BiRefNet
+```
+
+That proof covered code and missed weights. TRELLIS.2 removes the background of
+any image without alpha of its own, and the stock `pipeline.json` builds the
+remover from briaai's RMBG-2.0, whose weights are CC BY-NC 4.0. Loading them is
+an ordinary `transformers` call, so nothing restricted is ever imported and the
+blocker passed every run that used them.
+
+Renaming the model the pipeline asks for would not have fixed it. The wrapper in
+the stableprojectorz install loads a local `MODELS/RMBG-2.0` whenever one exists
+and ignores the name it was given, and that install keeps one there. So klin
+replaces the wrapper class before the pipeline is built, and the install's
+remover is never constructed:
+
+- `--rembg`, `TRELLIS_REMBG` or `trellis_rembg` in the manifest names a BiRefNet
+  directory, which is loaded from its own code with every weight accounted for.
+  The one Hi3DGen pins, `ZhengPeng7/BiRefNet`, is MIT.
+- Without one, an image that is already masked runs as before, and an opaque
+  image is refused by name rather than masked by anything.
+
+The run says which happened. A run that does not report its remover is a
+failure, because a clean-path claim with that part missing would be the same
+silence this section is about.
+
 ## Conform
 
 A mesh from anywhere becomes a project's own by pointing its uvs at the

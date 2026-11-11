@@ -38,6 +38,13 @@ The proof that a run touched no restricted code is not a reading of the diff. A
 transitive import three modules deep does not appear in one. The harness blocks
 nvdiffrast, nvdiffrec and nvdiffrec_render at the import system for the whole
 process and generates anyway, so the absence of a traceback is the evidence.
+
+**That proof covered code and missed weights.** The stock `pipeline.json` builds
+the background remover from briaai's RMBG-2.0, whose weights are CC BY-NC 4.0,
+and the pipeline runs it over any image without alpha of its own. Nothing about
+that is an import, so the blocker could not see it (session 14). The install's
+remover is now never built: `--rembg` names a BiRefNet directory to use instead,
+and without one an opaque image is refused rather than masked by anything.
 """
 
 import io
@@ -53,6 +60,7 @@ HELP = "TRELLIS.2 image-to-mesh, geometry only (needs its own python)"
 
 INSTALL_ENV = "TRELLIS_INSTALL"
 PYTHON_ENV = "TRELLIS_PYTHON"
+REMBG_ENV = "TRELLIS_REMBG"
 
 #: The checkpoint every tier loads. The tier (`--tier`) is a run parameter that
 #: picks the resolution cascade; it is not a second model, and naming it as one
@@ -177,6 +185,9 @@ def configure(parser):
                         help="bake a texture, which loads the restricted code")
     parser.add_argument("--online", action="store_true",
                         help="let the run reach Hugging Face, for a first fetch")
+    parser.add_argument("--rembg", default=None,
+                        help="a BiRefNet directory to mask images that have no "
+                             "alpha; the install's own RMBG-2.0 is never loaded")
     return parser
 
 
@@ -330,6 +341,24 @@ def interpreter(args, ctx, install):
     return path
 
 
+def remover_dir(args, ctx):
+    """The background remover a run may load, or None.
+
+    None is a real answer and not a failure: an image that is already masked
+    never reaches a remover, and the run refuses only when one is needed.
+    """
+    value = (args.rembg or os.environ.get(REMBG_ENV)
+             or ctx.manifest.get("trellis_rembg"))
+    if not value:
+        return None
+    path = os.path.normpath(os.path.expanduser(os.path.expandvars(str(value))))
+    if not os.path.isfile(os.path.join(path, "config.json")):
+        raise GenError(
+            "no model at %s: a remover is a directory holding config.json and "
+            "its weights, the way a Hugging Face snapshot lays it out" % path)
+    return path
+
+
 def script_path():
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "_inside_trellis.py")
@@ -393,6 +422,10 @@ def run(args, ctx):
             % ("/".join(sorted(states)) or "absent")
         )
 
+    remover = remover_dir(args, ctx)
+    ctx.say("remover  %s" % (
+        remover or "none: an image without its own alpha will be refused"))
+
     exe = interpreter(args, ctx, install)
     name = args.name or os.path.splitext(os.path.basename(image))[0]
     out_dir = os.path.abspath(args.out or os.path.join(install, "klin_out"))
@@ -407,6 +440,7 @@ def run(args, ctx):
         "tier": args.tier,
         "model": args.model,
         "mode": "textured" if args.textured else "geometry",
+        "rembg": remover,
     }
     argv = [exe, script_path(), json.dumps(job)]
     env = dict(os.environ)
@@ -463,6 +497,23 @@ def run(args, ctx):
             )
         ctx.say("no restricted module could be imported for the whole run, "
                 "and a mesh came out anyway")
+
+    if "remover" not in report:
+        raise GenError(
+            "the run did not say which background remover it built, so "
+            "nothing can be claimed about what masked the image")
+    removal = report["remover"]
+    if removal.get("loaded") and removal.get("loaded") != remover:
+        raise GenError(
+            "the run loaded a background remover from %s, which is not the "
+            "one it was given" % removal["loaded"])
+    configured = removal.get("configured") or "its stock remover"
+    if removal.get("called"):
+        ctx.say("background removed with %s; the install's %s was never built"
+                % (removal.get("loaded"), configured))
+    else:
+        ctx.say("the image carried its own alpha, so no remover ran; the "
+                "install's %s was never built" % configured)
 
     ctx.say("")
     ctx.say("next: klin conform blender %s" % report["glb"])
