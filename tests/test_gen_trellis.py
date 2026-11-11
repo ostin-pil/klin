@@ -340,6 +340,167 @@ def test_asking_for_the_network_out_loud_clears_the_offline_switches(repo, insta
     assert "online" in out
 
 
+# ---------------------------------------------------------- the background remover
+
+
+def _patched(repo, install):
+    made = repo()
+    root = install()
+    run(made, ["gen", "trellis", "--install", root, "--patch", "apply"])
+    return made, root
+
+
+def _remover_dir(tmp_path):
+    path = tmp_path / "BiRefNet"
+    path.mkdir()
+    (path / "config.json").write_text("{}")
+    return str(path)
+
+
+def test_no_remover_configured_says_an_opaque_image_will_be_refused(repo, install,
+                                                                    monkeypatch):
+    made, root = _patched(repo, install)
+    monkeypatch.setattr(trellis.subprocess, "run", _never)
+    code, out = run(made, ["gen", "trellis", "--install", root,
+                           "--image", __file__, "--dry-run"])
+    assert code == 0
+    assert "remover  none: an image without its own alpha will be refused" in out
+    assert '"rembg": null' in out
+
+
+def test_the_remover_travels_in_the_job_from_the_flag(repo, install, monkeypatch,
+                                                      tmp_path):
+    made, root = _patched(repo, install)
+    birefnet = _remover_dir(tmp_path)
+    monkeypatch.setattr(trellis.subprocess, "run", _never)
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__,
+                           "--rembg", birefnet, "--dry-run"])
+    assert code == 0
+    assert "remover  %s" % os.path.normpath(birefnet) in out
+    assert json.dumps(os.path.normpath(birefnet)) in out
+
+
+def test_the_remover_can_come_from_the_environment(repo, install, monkeypatch,
+                                                   tmp_path):
+    made, root = _patched(repo, install)
+    monkeypatch.setenv("TRELLIS_REMBG", _remover_dir(tmp_path))
+    monkeypatch.setattr(trellis.subprocess, "run", _never)
+    code, out = run(made, ["gen", "trellis", "--install", root,
+                           "--image", __file__, "--dry-run"])
+    assert code == 0
+    assert "will be refused" not in out
+
+
+def test_a_remover_that_is_not_a_model_directory_is_refused_before_anything_runs(
+        repo, install, monkeypatch, tmp_path):
+    made, root = _patched(repo, install)
+    monkeypatch.setattr(trellis.subprocess, "run", _never)
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__,
+                           "--rembg", str(tmp_path / "nowhere")])
+    assert code == 2
+    assert "config.json" in out
+
+
+def test_a_run_that_needed_no_remover_says_so_and_that_rmbg_was_never_built(
+        repo, install, monkeypatch):
+    made, root = _patched(repo, install)
+    monkeypatch.setattr(trellis.subprocess, "run",
+                        _proc(0, "TRELLIS " + json.dumps(_REPORT), ""))
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__])
+    assert code == 0
+    assert "the image carried its own alpha, so no remover ran" in out
+    assert "briaai/RMBG-2.0 was never built" in out
+
+
+def test_a_run_that_masked_the_image_names_the_remover_it_used(repo, install,
+                                                               monkeypatch, tmp_path):
+    made, root = _patched(repo, install)
+    birefnet = os.path.normpath(_remover_dir(tmp_path))
+    report = dict(_REPORT, remover={"configured": "briaai/RMBG-2.0",
+                                    "loaded": birefnet, "called": True})
+    monkeypatch.setattr(trellis.subprocess, "run",
+                        _proc(0, "TRELLIS " + json.dumps(report), ""))
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__,
+                           "--rembg", birefnet])
+    assert code == 0
+    assert "background removed with %s" % birefnet in out
+
+
+def test_a_run_that_loaded_some_other_remover_is_a_failure(repo, install,
+                                                           monkeypatch, tmp_path):
+    made, root = _patched(repo, install)
+    report = dict(_REPORT, remover={"configured": "briaai/RMBG-2.0",
+                                    "loaded": "models/RMBG-2.0", "called": True})
+    monkeypatch.setattr(trellis.subprocess, "run",
+                        _proc(0, "TRELLIS " + json.dumps(report), ""))
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__,
+                           "--rembg", _remover_dir(tmp_path)])
+    assert code == 2
+    assert "models/RMBG-2.0" in out
+
+
+def test_a_run_that_does_not_report_its_remover_claims_nothing(repo, install,
+                                                               monkeypatch):
+    made, root = _patched(repo, install)
+    report = dict(_REPORT)
+    del report["remover"]
+    monkeypatch.setattr(trellis.subprocess, "run",
+                        _proc(0, "TRELLIS " + json.dumps(report), ""))
+    code, out = run(made, ["gen", "trellis", "--install", root, "--image", __file__])
+    assert code == 2
+    assert "did not say which background remover" in out
+
+
+def _inside():
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(gen.__file__), "_inside_trellis.py")
+    spec = importlib.util.spec_from_file_location("_inside_trellis_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Stock(object):
+    """Stands in for the install's wrapper, which must never be constructed."""
+
+    def __init__(self, *a, **kw):
+        raise AssertionError("the install's remover was built")
+
+
+def test_the_guard_replaces_the_install_class_so_rmbg_is_never_built():
+    inside = _inside()
+    rembg = type("rembg", (), {"BiRefNet": _Stock})
+    record = {}
+    inside.guard_remover({"rembg": None}, rembg, record)
+    remover = rembg.BiRefNet(model_name="briaai/RMBG-2.0")
+    assert isinstance(remover, inside.Remover)
+    assert record == {"configured": "briaai/RMBG-2.0", "loaded": None, "called": False}
+
+
+def test_without_a_remover_an_opaque_image_is_refused_by_name():
+    inside = _inside()
+    rembg = type("rembg", (), {"BiRefNet": _Stock})
+    record = {}
+    inside.guard_remover({"rembg": None}, rembg, record)
+    remover = rembg.BiRefNet(model_name="briaai/RMBG-2.0")
+    remover.to("cuda")
+    remover.cpu()
+    with pytest.raises(inside.RemoverRefused) as refused:
+        remover(object())
+    assert "briaai/RMBG-2.0" in str(refused.value)
+    assert "CC BY-NC" in str(refused.value)
+    assert record["called"] is True
+
+
+def test_a_pipeline_holding_a_remover_klin_did_not_build_is_refused():
+    inside = _inside()
+    pipeline = type("pipeline", (), {"rembg_model": object()})()
+    with pytest.raises(inside.RemoverRefused):
+        inside.confirm_remover(pipeline)
+    inside.confirm_remover(type("pipeline", (), {"rembg_model": None})())
+
+
 def test_every_generator_is_discovered():
     assert set(gen.adapters()) == {"comfy", "hi3dgen", "trellis"}
 
@@ -365,6 +526,7 @@ _REPORT = {
     "restricted_blocked": True,
     "has_baked_texture": False,
     "has_uvs": True,
+    "remover": {"configured": "briaai/RMBG-2.0", "loaded": None, "called": False},
 }
 
 
