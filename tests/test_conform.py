@@ -853,6 +853,50 @@ def test_the_id_defaults_to_the_output_stem_and_the_flag_overrides_it(mesh,
     assert _row(made, "bar-counter") is not None
 
 
+def test_the_staged_file_is_named_for_the_id_not_the_source(mesh, fake_blender):
+    """The id is the name the asset has here; the basename is the vendor's."""
+    made = mesh()
+    conforming(made, fake_blender, "--id", "bar-counter")
+    staging = os.path.join(made.root, "assets", "_staging")
+    assert os.path.isfile(os.path.join(staging, "bar-counter.glb"))
+    assert not os.path.isfile(os.path.join(staging, "counter.glb"))
+
+
+def test_two_ids_from_one_source_do_not_overwrite_each_other(mesh, fake_blender):
+    """A pack shipping one file with two props in it is the ordinary case.
+
+    Naming both outputs after the source staged the second over the first and
+    said nothing: two records, one file, and the first record pointing at the
+    second's geometry.
+    """
+    made = mesh()
+    conforming(made, fake_blender, "--id", "bar-counter")
+    conforming(made, fake_blender, "--id", "bar-stool")
+    staging = os.path.join(made.root, "assets", "_staging")
+    assert sorted(os.listdir(staging)) == ["bar-counter.glb", "bar-stool.glb"]
+
+
+def test_an_out_directory_that_does_not_exist_yet_is_created(mesh, fake_blender,
+                                                             tmp_path):
+    """Blender fails on a missing directory from inside the subprocess, where
+    the error names the temporary working path and not the --out given."""
+    target = str(tmp_path / "round18" / "conformed")
+    made = mesh()
+    code, out = conforming(made, fake_blender, "--out", target)
+    assert code == 0, out
+    assert os.path.isfile(os.path.join(target, "counter.glb"))
+
+
+def test_an_out_naming_a_glb_is_still_a_file_not_a_directory(mesh, fake_blender,
+                                                             tmp_path):
+    """Somebody who named the output meant it, and .glb is the discriminator."""
+    target = str(tmp_path / "elsewhere" / "my-counter.glb")
+    made = mesh()
+    code, out = conforming(made, fake_blender, "--out", target)
+    assert code == 0, out
+    assert os.path.isfile(target)
+
+
 # ------------------------------------------------------------------ end to end
 
 

@@ -109,6 +109,42 @@ def test_cc_by_warns_but_does_not_fail(repo):
     assert "prefer-cc0" in [f.rule_id for f in findings if f.level == "warn"]
 
 
+def test_own_work_is_not_nagged_to_prefer_a_licence_it_cannot_have(repo):
+    """A prefer rule chooses between things one could have acquired instead.
+
+    Barinn's rule 1 prefers CC0 over CC-BY and was warning that the project's
+    own lathe props are "not public-domain", which asks the project to find a
+    more permissively licensed version of a thing it wrote itself. A warning
+    nobody can act on teaches the reader to scroll past the ones that matter.
+    """
+    made = repo()
+    data, rules, facts = rules_for(made)
+    mine = record("barinn-authored-props", "LicenseRef-Barinn-Own")
+    mine["source"]["adapter"] = "authored"
+    findings = policy.evaluate([mine], rules, facts, ship=True)
+    assert "prefer-cc0" not in [f.rule_id for f in findings]
+
+
+def test_a_deny_rule_still_runs_over_own_work(repo):
+    """Only prefer skips. A safety rule that trusted a field would not be one."""
+    made = repo()
+    data, rules, facts = rules_for(made)
+    mine = record("mine-but-share-alike", "CC-BY-SA-4.0")
+    mine["source"]["adapter"] = "authored"
+    fails = policy.failed(policy.evaluate([mine], rules, facts, ship=True))
+    assert "no-share-alike" in [f.rule_id for f in fails]
+
+
+def test_an_acquired_record_is_still_nagged(repo):
+    """The skip is about own work and must not quietly cover everything."""
+    made = repo()
+    data, rules, facts = rules_for(made)
+    theirs = record("bought", "CC-BY-4.0")
+    theirs["source"]["adapter"] = "manual"
+    findings = policy.evaluate([theirs], rules, facts, ship=True)
+    assert "prefer-cc0" in [f.rule_id for f in findings if f.level == "warn"]
+
+
 def test_set_level_rule_stays_quiet_when_the_fact_is_false(repo):
     made = repo(steam_drm=False)
     data, rules, facts = rules_for(made)

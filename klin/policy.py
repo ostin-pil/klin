@@ -211,10 +211,34 @@ def _deny(rule, records):
     return findings
 
 
+def own_work(record):
+    """Whether the project made this itself rather than acquiring it.
+
+    The `authored` adapter is the marker, and it is the one thing no fetch
+    adapter ever writes: a record gets it by being written for geometry built
+    in the consuming repository.
+    """
+    return ledger.field(record, "source.adapter") == "authored"
+
+
 def _prefer(rule, records):
+    """A preference between licences one could have acquired instead.
+
+    Own work is skipped, because there was no alternative to prefer. Barinn's
+    rule 1 prefers CC0 over CC-BY and was warning that the project's own lathe
+    props are "not public-domain", which asks the project to go and find a more
+    permissively licensed version of a thing it wrote itself. A warning nobody
+    can act on is a warning everybody learns to scroll past, which costs the
+    rules that matter.
+
+    Only `prefer` skips. A `deny` is a safety rule and still runs over
+    everything, and `require` still wants own work recorded like anything else.
+    """
     wanted = set(rule.get("families") or [])
     findings = []
     for record in records:
+        if own_work(record):
+            continue
         if not families(record) & wanted:
             findings.append(
                 Finding(
